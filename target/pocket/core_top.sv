@@ -306,6 +306,16 @@ module core_top (
   assign vpll_feed               = 1'bZ;
 
 
+  // Debug build that measures the APF file commands MSU-1 needs (see
+  // target/pocket/msu/msu_probe.sv). Holds the SNES in reset until done.
+  parameter MSU_PROBE = 1'b0;
+
+  wire probe_dt_own;
+  wire [7:0] probe_dt_addr;
+  wire probe_dt_wren;
+  wire [31:0] probe_dt_wdata;
+  wire [31:0] probe_log_rd_data;
+
   // for bridge write data, we just broadcast it to all bus devices
   // for bridge read data, we have to mux it
   // add your own devices here
@@ -325,6 +335,10 @@ module core_top (
 
     if (bridge_addr[31:28] == 4'h2) begin
       bridge_rd_data <= sd_read_data;
+    end
+
+    if (MSU_PROBE && bridge_addr[31:28] == 4'h5) begin
+      bridge_rd_data <= probe_log_rd_data;
     end
   end
 
@@ -435,6 +449,15 @@ module core_top (
 
   // bridge target commands
   // synchronous to clk_74a
+  wire target_dataslot_read;
+  wire target_dataslot_getfile;
+  wire target_dataslot_openfile;
+  wire [15:0] target_dataslot_id;
+  wire [31:0] target_dataslot_slotoffset;
+  wire [31:0] target_dataslot_bridgeaddr;
+  wire [31:0] target_dataslot_length;
+  wire target_dataslot_done;
+  wire [2:0] target_dataslot_err;
 
 
   // bridge data slot access
@@ -493,6 +516,24 @@ module core_top (
       .savestate_load_err (savestate_load_err),
 
       .osnotify_inmenu(osnotify_inmenu),
+
+      .target_dataslot_read    (target_dataslot_read),
+      .target_dataslot_write   (1'b0),
+      .target_dataslot_getfile (target_dataslot_getfile),
+      .target_dataslot_openfile(target_dataslot_openfile),
+
+      .target_dataslot_ack (),
+      .target_dataslot_done(target_dataslot_done),
+      .target_dataslot_err (target_dataslot_err),
+
+      .target_dataslot_id        (target_dataslot_id),
+      .target_dataslot_slotoffset(target_dataslot_slotoffset),
+      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
+      .target_dataslot_length    (target_dataslot_length),
+
+      // Above APF's {slot id, size} table at the start of the datatable
+      .target_buffer_resp_struct (32'hF8002100),
+      .target_buffer_param_struct(32'hF8002200),
 
       .datatable_addr(datatable_addr),
       .datatable_wren(datatable_wren),
@@ -602,11 +643,23 @@ module core_top (
       .read_data(sd_buff_din)
   );
 
+  reg probe_size_toggle = 0;
+  always @(posedge clk_74a) probe_size_toggle <= ~probe_size_toggle;
+
   always @(posedge clk_74a or negedge pll_core_locked) begin
     if (~pll_core_locked) begin
       datatable_addr <= 0;
       datatable_data <= 0;
       datatable_wren <= 0;
+    end else if (MSU_PROBE && probe_dt_own) begin
+      datatable_addr <= {2'b0, probe_dt_addr};
+      datatable_data <= probe_dt_wdata;
+      datatable_wren <= probe_dt_wren;
+    end else if (MSU_PROBE && probe_size_toggle) begin
+      // Size of the probe log slot, data slot index 2
+      datatable_wren <= 1;
+      datatable_data <= 32'd4096;
+      datatable_addr <= 2 * 2 + 1;
     end else begin
       // Write sram size half of the time
       datatable_wren <= 1;
@@ -616,6 +669,83 @@ module core_top (
       datatable_addr <= 1 * 2 + 1;
     end
   end
+
+  ///////////////////////////////////////////////
+  // MSU-1 probe (debug builds only)
+
+  wire probe_scr_we;
+  wire [9:0] probe_scr_addr;
+  wire [7:0] probe_scr_data;
+  wire probe_released;
+  wire probe_overlay_en;
+
+  generate
+    if (MSU_PROBE) begin : gen_probe
+      msu_probe probe (
+          .clk(clk_74a),
+          .pll_core_locked(pll_core_locked),
+          .reset_n(reset_n),
+          .bridge_endian_little(bridge_endian_little),
+
+          .target_dataslot_read(target_dataslot_read),
+          .target_dataslot_getfile(target_dataslot_getfile),
+          .target_dataslot_openfile(target_dataslot_openfile),
+          .target_dataslot_id(target_dataslot_id),
+          .target_dataslot_slotoffset(target_dataslot_slotoffset),
+          .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
+          .target_dataslot_length(target_dataslot_length),
+          .target_dataslot_done(target_dataslot_done),
+          .target_dataslot_err(target_dataslot_err),
+
+          .dt_own(probe_dt_own),
+          .dt_addr(probe_dt_addr),
+          .dt_wren(probe_dt_wren),
+          .dt_wdata(probe_dt_wdata),
+          .dt_q(datatable_q),
+
+          .bridge_addr(bridge_addr),
+          .bridge_wr(bridge_wr),
+          .bridge_wr_data(bridge_wr_data),
+          .bridge_rd(bridge_rd),
+          .log_rd_data(probe_log_rd_data),
+
+          .scr_we  (probe_scr_we),
+          .scr_addr(probe_scr_addr),
+          .scr_data(probe_scr_data),
+
+          .button_start(cont1_key[15]),
+          .released(probe_released),
+          .overlay_en(probe_overlay_en)
+      );
+    end else begin : gen_no_probe
+      assign target_dataslot_read = 0;
+      assign target_dataslot_getfile = 0;
+      assign target_dataslot_openfile = 0;
+      assign target_dataslot_id = 0;
+      assign target_dataslot_slotoffset = 0;
+      assign target_dataslot_bridgeaddr = 0;
+      assign target_dataslot_length = 0;
+      assign probe_dt_own = 0;
+      assign probe_dt_addr = 0;
+      assign probe_dt_wren = 0;
+      assign probe_dt_wdata = 0;
+      assign probe_log_rd_data = 0;
+      assign probe_scr_we = 0;
+      assign probe_scr_addr = 0;
+      assign probe_scr_data = 0;
+      assign probe_released = 1;
+      assign probe_overlay_en = 0;
+    end
+  endgenerate
+
+  // The probe holds the SNES in reset until it is done and START is pressed
+  wire probe_released_s;
+
+  synch_3 probe_released_sync (
+      probe_released,
+      probe_released_s,
+      clk_sys_21_48
+  );
 
   wire [15:0] audio_l;
   wire [15:0] audio_r;
@@ -769,7 +899,7 @@ module core_top (
       .clk_mem_85_9 (clk_mem_85_9),
       .clk_sys_21_48(clk_sys_21_48),
 
-      .core_reset(~pll_core_locked || reset_button_s),
+      .core_reset(~pll_core_locked || reset_button_s || (MSU_PROBE && ~probe_released_s)),
 
       .rtc(rtc),
 
@@ -933,6 +1063,11 @@ module core_top (
   wire [23:0] rgb_out;
   wire de_out;
 
+  wire filler_hs;
+  wire filler_vs;
+  wire filler_de;
+  wire [23:0] filler_rgb;
+
   scanline_filler #(
       .SNAP_COUNT (2),
       .SNAP_POINTS('{240, 224}),
@@ -947,14 +1082,42 @@ module core_top (
       .hblank_in(h_blank),
       .rgb_in(video_rgb_snes),
 
-      .hsync(video_hs),
-      .vsync(video_vs),
+      .hsync(filler_hs),
+      .vsync(filler_vs),
 
-      .de (de_out),
-      .rgb(rgb_out),
+      .de (filler_de),
+      .rgb(filler_rgb),
 
       .snap_index(snap_index)
   );
+
+  generate
+    if (MSU_PROBE) begin : gen_probe_overlay
+      msu_probe_overlay probe_overlay (
+          .clk_74a (clk_74a),
+          .scr_we  (probe_scr_we),
+          .scr_addr(probe_scr_addr),
+          .scr_data(probe_scr_data),
+          .enable  (probe_overlay_en),
+
+          .clk_video(clk_video_5_37),
+          .hs_in(filler_hs),
+          .vs_in(filler_vs),
+          .de_in(filler_de),
+          .rgb_in(filler_rgb),
+
+          .hs_out (video_hs),
+          .vs_out (video_vs),
+          .de_out (de_out),
+          .rgb_out(rgb_out)
+      );
+    end else begin : gen_no_probe_overlay
+      assign video_hs = filler_hs;
+      assign video_vs = filler_vs;
+      assign de_out = filler_de;
+      assign rgb_out = filler_rgb;
+    end
+  endgenerate
 
   reg prev_de;
   reg prev_vs;

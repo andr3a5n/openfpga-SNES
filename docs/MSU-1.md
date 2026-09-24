@@ -1,6 +1,7 @@
 # MSU-1 on the Analogue Pocket: feasibility and implementation plan
 
-Status: analysis and design only. No RTL is changed by this document.
+Status: phase 0 (the probe build) is implemented and simulated, and waits for a
+run on real hardware. See [MSU-1-probe.md](MSU-1-probe.md) for how to run it.
 
 ## Verdict
 
@@ -18,10 +19,11 @@ The data port (the `.msu` file) is feasible for files that fit in spare SDRAM
 port at DMA speed are not realistic with the measured bandwidth. They are out of
 scope.
 
-The largest risk is not bandwidth. It is whether the extra logic fits the
-`main` bitstream (CX4 + GSU + SA-1 + DSPn) and still meets timing. The only
-way to know is to build it. A fallback that keeps MSU-1 for the common case is
-described in [Fitting the logic](#fitting-the-logic).
+The largest risk is not bandwidth, it is FPGA space. Measured: the `main`
+bitstream (CX4 + GSU + SA-1 + DSPn) already uses 97% of the logic, so MSU-1
+cannot simply be added to it. [Fitting the logic](#fitting-the-logic) describes
+how to keep every enhancement chip anyway, by splitting `main` into one
+bitstream per chip.
 
 ## What exists today
 
@@ -268,7 +270,24 @@ Phase 2 serves the data port:
 
 ## Fitting the logic
 
-Estimate (not measured, since Quartus is not available here):
+Measured with Quartus 21.1 (the CI image), unmodified `main` bitstream (NTSC,
+CX4 + GSU + SA-1 + DSPn):
+
+| Resource | Used | Free |
+|---|---|---|
+| Logic (ALMs) | 17,878 / 18,480 (97%) | ~600 |
+| M10K blocks | 257 / 308 (83%) | 51 |
+| DSP blocks | 24 / 66 | 42 |
+
+Timing: the unmodified core already reports negative setup slack on the SNES
+clocks (-6.7 ns on the 21.48 MHz system clock, -3.4 ns on the 85.9 MHz memory
+clock). Much of that is multicycle paths the constraints do not describe:
+`target/pocket/core_constraints.sdc` sets its multicycle paths on
+`ic|nes|sdram|*`, an instance that does not exist in this core, so Quartus
+ignores them. The released core works regardless. New logic is judged against
+this baseline, not against zero slack.
+
+Estimate for MSU-1 itself:
 
 | Block | ALMs | M10K | DSP |
 |---|---|---|---|
@@ -281,16 +300,25 @@ Estimate (not measured, since Quartus is not available here):
 The audio ring is in SRAM because block RAM is tight. VRAM (64 KB) and BSRAM
 (128 KB) alone take about 192 of the 308 M10K blocks.
 
-Decision after the first fitter report:
+So MSU-1 does not fit into `main` next to all four chips. Removing chips
+would cost classics (Mega Man X2/X3, Super Mario Kart, Super Mario RPG, Star
+Fox and Yoshi's Island all have popular MSU-1 packs). Instead, split `main` by
+chip. The chip32 loader already reads the chip type from the ROM header and
+picks between three bitstreams, and the same mechanism can pick between more:
 
-1. **Fits in all three bitstreams** (`main`, `PAL`, `SPCSDD1`): done.
-2. **Does not fit `main`:** build MSU-1 into a coprocessor-free NTSC and PAL
-   bitstream (the `none`/`none_pal` configurations already exist in
-   `generate.tcl`), and have `loader.asm` choose it for ROMs without an
-   enhancement chip. That covers Zelda, Super Metroid, Super Mario World,
-   Chrono Trigger, Final Fantasy, DKC and most other packs. Packs for chip
-   games (Mega Man X2/X3, Super Mario Kart, Super Mario RPG, Star Fox) would
-   then run without MSU-1 until a slimmer combination is found.
+| Bitstream | Chips | For |
+|---|---|---|
+| plain + MSU-1 | none (DSPn too if it fits) | most games and most MSU-1 packs |
+| SA-1 + MSU-1 | SA-1 | Super Mario RPG, Kirby Super Star |
+| GSU + MSU-1 | Super FX | Star Fox, Yoshi's Island, Doom |
+| CX4 + DSPn + MSU-1 | CX4, DSP-1..4 | Mega Man X2/X3, Super Mario Kart, Pilotwings |
+| SPCSDD1 (as today) | SPC7110, S-DD1, BS-X | unchanged, MSU-1 if it fits |
+| PAL (as today) | all four | PAL ROMs; a PAL plain + MSU-1 variant if needed |
+
+Each of these has far more headroom than today's `main`, and no game loses its
+chip. The cost is CI time (one compile of about 35 minutes each, in parallel)
+and a larger download. Only if a combination still does not fit does a
+rarely used chip or an optional feature go.
 
 ## Unknowns to settle first (phase 0)
 
@@ -302,21 +330,38 @@ Each of these changes the design, and all of them need hardware:
 | P2 | Does `0x0192` work on a read-only (`0x8`) deferload slot? Latency in a folder of ~100 files? | Slot parameters; mount latency |
 | P3 | After `0x0192`, does the datatable size entry for that slot change? | Size path, or the end-of-file method above |
 | P4 | `0x0180` across end of file: code 2 with or without data? Does length `0xFFFFFFFF` clamp as documented? | End-of-file detection |
-| P5 | Throughput for 4/8/16/32/64 KB reads; random-read latency 10 MB and 50 MB into a file | Chunk size, watermarks |
+| P5 | Throughput for 4/8/16/32/64 KB reads; latency of reads scattered over the first 15 MB of a file | Chunk size, watermarks |
 | P6 | Cost of alternating reads between slots 20 and 21 | Confirms preload over streaming for `.msu` |
 | P7 | How soon after reset exit target commands are accepted | Boot hold length and timeout |
 | P8 | Minimum firmware version with `0x0190`/`0x0192` | `core.json` requirement |
 
-A cheap way to get the answers without an on-screen debugger: a debug build in
-which a probe FSM runs these tests at boot and writes a results block into
-BSRAM. With a test ROM that declares SRAM, the Pocket saves BSRAM to the `.sav`
-file on exit. A small script decodes it.
+The probe build answers P1-P7 in one run (P8 is the firmware version the
+tester reports). It shows the results on screen and also writes them to a log
+file through an extra nonvolatile data slot, which the Pocket saves on exit
+like a save file. `tools/msu_probe.py decode` turns the log into a report.
 
 ## Phased plan
 
-**Phase 0: probe build.** Wire `target_dataslot_*`, add the command sequencer
-(with the `done` fix), add the probe FSM and the BSRAM results block, add the
-two slots to `data.json`. Deliverable: answers P1-P8 from one hardware session.
+**Phase 0: probe build (implemented).** A separate core,
+`andr3a5n.SNESMSUProbe`, so the normal SNES core stays untouched:
+
+- `target/pocket/msu/msu_tgt_cmd.sv`: issues one target command at a time,
+  with the `done` fix and a 10 s timeout. Reused by phase 1.
+- `target/pocket/msu/msu_path.sv`: builds `<name>.msu` / `<name>-<n>.pcm` in
+  the `0x0192` parameter struct from the `0x0190` response. Reused by phase 1.
+- `target/pocket/msu/msu_probe.sv`: the test sequence, a 4 KB log exposed at
+  bridge `0x5000_0000` as data slot 30, and a read sink at `0x6xxxxxxx` that
+  counts and pattern-checks the data APF delivers.
+- `target/pocket/msu/msu_probe_overlay.sv`: 32x28 text overlay with the results.
+- `core_top.sv`: all of it behind the `MSU_PROBE` parameter; normal builds are
+  unchanged. The SNES is held in reset until the probe is done and START is
+  pressed.
+- `sim/msu/`: testbench running the probe against the real `core_bridge_cmd.v`
+  and a model of the firmware that serves the generated test files.
+- `tools/msu_probe.py`: test file generator, log decoder, ROM generator.
+- `.github/workflows/msu_probe.yml`: simulate, compile, package for the SD card.
+
+Deliverable: answers P1-P8 from one hardware session.
 
 **Phase 1: audio MVP.** `msu_path`, `msu_apf_ctrl`, `msu_sram`,
 `msu_host_shim`, mixer, `USE_MSU '1`, boot hold. Verification before hardware:
@@ -345,7 +390,8 @@ pack that reads the data port.
 
 ## Side finding: SDRAM is never refreshed
 
-Unrelated to MSU-1, but found while checking SDRAM port 1. Since upstream
+Deferred: the owner decided to leave this as it is until MSU-1 works, since
+nothing about MSU-1 depends on it. Unrelated to MSU-1, but found while checking SDRAM port 1. Since upstream
 commit `b633108` ("sdram: synchronise refresh with WRAM refresh"),
 `rtl/upstream/sdram.sv` only issues auto-refresh when `rfs1` is high
 (`rfs <= ~raw_req_test & rfs1`). MiSTer drives it with

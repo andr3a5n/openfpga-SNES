@@ -1,0 +1,9 @@
+MSU-1 probe: a debug build of the SNES core (port by agg23, core by srg320).
+
+It does not add MSU-1 support. It measures how the Pocket firmware opens and
+reads files at runtime, which MSU-1 support depends on.
+
+Load Assets/snes/common/msuprobe/msuprobe.sfc. The probe runs for up to a
+minute and shows its results on screen. Press START to boot the game (a green
+screen), then quit the core from the Pocket menu so the log file
+msuprobe.msulog is written to the Saves folder.

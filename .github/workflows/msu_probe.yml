@@ -1,0 +1,67 @@
+################################################################################
+# Builds the MSU-1 probe core (a debug build, see docs/MSU-1.md, phase 0).
+#
+# Run it from the Actions tab ("Run workflow", pick the branch), or push a
+# change to the files listed below. The artifact "SD card" unzips to the root
+# of the Pocket's SD card: the probe core, which installs next to the normal
+# SNES core, and its test files.
+################################################################################
+name: MSU-1 Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - "target/pocket/**"
+      - "rtl/mister_top/**"
+      - "generate.tcl"
+      - "support/loader.asm"
+      - "pkg/probe/**"
+      - "tools/msu_probe.py"
+      - "tools/package_probe.py"
+      - ".github/workflows/msu_probe.yml"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "🧰 Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "🔬 Simulate"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iverilog
+          sim/msu/run_probe_sim.sh > sim.log
+          tail -n 40 sim.log
+          grep -q "PASS: probe finished" sim.log
+
+      - name: "🏗️ Compile design"
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/build ghcr.io/raetro/quartus:21.1 \
+            quartus_sh -t generate.tcl probe
+
+      - name: "📊 Fit and timing summary"
+        if: always()
+        run: .github/scripts/fit_summary.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📦 Package"
+        run: python3 tools/package_probe.py projects/output_files/snes_pocket.rbf sdcard
+
+      - name: "⬆️ Upload SD card files"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SD card - SNES MSU-1 probe
+          path: sdcard/
+
+      - name: "⬆️ Upload reports"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports - probe
+          path: |
+            projects/output_files/*.summary
+            projects/output_files/*.rpt
+            sim.log

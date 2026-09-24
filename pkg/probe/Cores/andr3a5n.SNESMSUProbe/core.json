@@ -1,0 +1,47 @@
+{
+  "core": {
+    "magic": "APF_VER_1",
+    "metadata": {
+      "platform_ids": [
+        "snes"
+      ],
+      "shortname": "SNESMSUProbe",
+      "description": "Debug build of the SNES core that measures the Pocket file access MSU-1 support needs",
+      "author": "andr3a5n",
+      "url": "https://github.com/andr3a5n/openfpga-SNES",
+      "version": "0.1.0",
+      "date_release": "2026-09-24"
+    },
+    "framework": {
+      "target_product": "Analogue Pocket",
+      "version_required": "1.1",
+      "sleep_supported": false,
+      "dock": {
+        "supported": true,
+        "analog_output": false
+      },
+      "hardware": {
+        "link_port": false,
+        "cartridge_adapter": -1
+      },
+      "chip32_vm": "loader.bin"
+    },
+    "cores": [
+      {
+        "name": "main",
+        "id": 0,
+        "filename": "snes_main.rev"
+      },
+      {
+        "name": "SPCSDD1",
+        "id": 1,
+        "filename": "snes_spc.rev"
+      },
+      {
+        "name": "PAL",
+        "id": 2,
+        "filename": "snes_pal.rev"
+      }
+    ]
+  }
+}

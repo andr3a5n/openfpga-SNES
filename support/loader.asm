@@ -5,6 +5,7 @@ constant DEBUG = 0
 
 constant rom_dataslot = 0
 constant save_dataslot = 10
+constant probe_dataslot = 30 // MSU-1 probe builds only (-d MSU_PROBE)
 
 // Host init command
 constant host_init = 0x4002
@@ -210,6 +211,12 @@ pmpw r1,r2 // Write ioctl_download = 1
 
 ld r1,#save_dataslot
 loadf r1 // Load Save
+
+if {defined MSU_PROBE} {
+// Load the probe log slot too, so APF treats it exactly like the save slot
+ld r1,#probe_dataslot
+loadf r1
+}
 
 ld r1,#0 // Set address for write
 ld r2,#0 // Downloading end

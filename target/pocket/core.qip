@@ -7,6 +7,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "save_state_controller.sv"]
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "sound_i2s.sv"]
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "sync_fifo.sv"]
+set_global_assignment -name QIP_FILE              [file join $::quartus(qip_path) "msu/msu.qip"]
 
 set_global_assignment -name SIGNALTAP_FILE [file join $::quartus(qip_path) "stp1.stp"]
 

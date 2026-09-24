@@ -75,3 +75,7 @@ cr_ie_info.json
 # ROMS Checklist
 !checklist.sha1
 !checklist.md5
+
+# MSU-1 probe simulation
+sim/msu/work/
+__pycache__/
