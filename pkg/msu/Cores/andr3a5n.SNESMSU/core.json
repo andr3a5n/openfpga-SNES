@@ -9,7 +9,7 @@
       "description": "Beta: the SNES core with MSU-1 audio and data",
       "author": "andr3a5n",
       "url": "https://github.com/andr3a5n/openfpga-SNES",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "date_release": "2026-09-24"
     },
     "framework": {

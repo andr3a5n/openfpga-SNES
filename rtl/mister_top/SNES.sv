@@ -165,7 +165,13 @@ module MAIN_SNES (
     output wire [28:0] msu_ram_addr,   // data file, in 8-byte units
     output wire        msu_ram_req,    // toggles for each read
     input  wire        msu_ram_ack,    // follows msu_ram_req when msu_ram_dout is valid
-    input  wire [63:0] msu_ram_dout
+    input  wire [63:0] msu_ram_dout,
+
+    // MSU-1 state for the event log (target/pocket/msu/msu_log.sv):
+    // [7:0] volume, [8] playing, [9] repeat, [10] resume, [11] end of track,
+    // [12] data seek, [13] data seek done, [39:16] ROM address,
+    // [63:40] data port address
+    output wire [63:0] msu_dbg
 );
   parameter USE_CX4 = 1'b0;
   parameter USE_SDD1 = 1'b0;
@@ -344,6 +350,8 @@ module MAIN_SNES (
   wire msu_data_seek;
   wire msu_data_req;
 
+  wire msu_hold_busy;  // msu_fader: the old track is still fading out
+
 
   wire vblank_n;
   wire hblank_n;
@@ -470,7 +478,7 @@ module MAIN_SNES (
       // MSU register handling
       .MSU_TRACK_NUM(msu_track_num),
       .MSU_TRACK_REQUEST(msu_track_request),
-      .MSU_TRACK_MOUNTING(msu_track_mounting),
+      .MSU_TRACK_MOUNTING(msu_track_mounting | msu_hold_busy),
       .MSU_TRACK_MISSING(msu_track_missing),
       .MSU_VOLUME(msu_volume),
       .MSU_AUDIO_REPEAT(msu_audio_repeat),
@@ -583,6 +591,19 @@ module MAIN_SNES (
   wire ROM_WORD;
   wire [15:0] ROM_D;
   wire [15:0] ROM_Q;
+
+  assign msu_dbg = {
+    msu_data_addr[23:0],
+    ROM_ADDR,
+    2'b00,
+    msu_data_ack,
+    msu_data_seek,
+    msu_audio_stop,
+    msu_audio_resume,
+    msu_audio_repeat,
+    msu_audio_playing,
+    msu_volume
+  };
 
   sdram sdram (
       .init(0),  //~clock_locked),
@@ -1071,20 +1092,41 @@ module MAIN_SNES (
       wire [15:0] msu_l;
       wire [15:0] msu_r;
 
+      // Pocket addition: fades instead of clicks at stop, start and track
+      // changes, and smoothed volume steps
+      wire [7:0] fader_volume;
+      wire fader_play;
+      wire fader_track_processing;
+
+      msu_fader msu_fader (
+          .clk  (clk_sys),
+          .reset(reset),
+
+          .volume(msu_volume),
+          .playing(msu_audio_playing),
+          .track_request(msu_track_request),
+          .audio_stop(msu_audio_stop),
+
+          .audio_volume(fader_volume),
+          .audio_play(fader_play),
+          .audio_track_processing(fader_track_processing),
+          .hold_busy(msu_hold_busy)
+      );
+
       msu_audio msu_audio (
           .reset(reset),
 
           .clk(clk_sys),
           .clk_rate(PAL ? 21281370 : 21477270),
 
-          .ctl_volume(msu_volume),
+          .ctl_volume(fader_volume),
           .ctl_stop(msu_audio_stop),
-          .ctl_play(msu_audio_playing),
+          .ctl_play(fader_play),
           .ctl_resume(msu_audio_resume),
           .ctl_repeat(msu_audio_repeat),
 
           .track_size(msu_audio_size),
-          .track_processing(msu_track_request),
+          .track_processing(fader_track_processing),
 
           .audio_download(msu_audio_download),
           .audio_data(msu_audio_data),
@@ -1141,6 +1183,8 @@ module MAIN_SNES (
     end else begin : gen_no_msu
       assign audio_l = main_audio_l;
       assign audio_r = main_audio_r;
+
+      assign msu_hold_busy = 0;
 
       assign msu_audio_req = 0;
       assign msu_audio_seek = 0;

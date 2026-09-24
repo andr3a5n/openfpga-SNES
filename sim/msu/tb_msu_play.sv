@@ -8,6 +8,13 @@
 // resume. Every sample msu_audio plays is compared with the pattern
 // tools/msu_testpack.py wrote.
 //
+// msu_fader sits between MSU.sv and msu_audio as in MAIN_SNES. A stop or
+// track change must never cut msu_audio's output at a volume above zero
+// (a click), and busy must clear within 2.5 ms for tracks the boot scan found
+// (MiSTer-like), the fade of the old track included. Track 40 lies beyond the
+// scan and takes the slow path. At the end the event log is read over the
+// bridge like APF does and written to msu_play.msulog.
+//
 // Two msu_audio behaviours are expected, as on MiSTer: a track that plays
 // once stops when msu_audio has fetched its last sector, with up to 767
 // samples still in its FIFO, and those play first when the track is played
@@ -35,6 +42,7 @@ module tb_msu_play;
   localparam integer T1_SAMPLES = 12000;
   localparam integer T1_LOOP = 5000;
   localparam integer T2_SAMPLES = 3000;
+  localparam integer T40_SAMPLES = 2000;
   localparam integer DATA_SIZE = 100 * 1024 + 3;
 
   // ---------------------------------------------------------------------------
@@ -48,7 +56,9 @@ module tb_msu_play;
   wire [31:0] cmd_bridge_rd_data;
   wire bridge_endian_little = 0;  // as measured on firmware 2.7
 
-  assign bridge_rd_data = bridge_addr[31:24] == 8'hF8 ? cmd_bridge_rd_data : 32'h0;
+  wire [31:0] log_rd_data;
+  assign bridge_rd_data = bridge_addr[31:24] == 8'hF8 ? cmd_bridge_rd_data :
+      bridge_addr[31:28] == 4'h5 ? log_rd_data : 32'h0;
 
   wire reset_n;
   wire target_dataslot_read, target_dataslot_getfile, target_dataslot_openfile;
@@ -157,6 +167,14 @@ module tb_msu_play;
   wire msu_ram_req;
   wire msu_ram_ack;
   wire [63:0] msu_ram_dout;
+  wire hold_busy;
+
+  // Vertical blank for the event log: every 16.64 ms
+  reg vblank = 0;
+  always begin
+    #16_570_000 vblank = 1;
+    #70_000 vblank = 0;
+  end
 
   msu_pocket #(
       .QUEUE_LOG2(5)  // 32 KB, smaller than track 1, so the queue wraps
@@ -183,9 +201,11 @@ module tb_msu_play;
       .dt_q    (datatable_q),
 
       .bridge_wr(bridge_wr),
+      .bridge_rd(bridge_rd),
       .bridge_addr(bridge_addr),
       .bridge_wr_data(bridge_wr_data),
       .bridge_endian_little(bridge_endian_little),
+      .log_rd_data(log_rd_data),
 
       .sram_a(sram_a),
       .sram_dq(sram_dq),
@@ -212,7 +232,21 @@ module tb_msu_play;
       .msu_ram_addr(msu_ram_addr),
       .msu_ram_req(msu_ram_req),
       .msu_ram_ack(msu_ram_ack),
-      .msu_ram_dout(msu_ram_dout)
+      .msu_ram_dout(msu_ram_dout),
+
+      .msu_dbg({
+        msu_data_addr[23:0],
+        cpu_addr,
+        2'b00,
+        msu_data_ack,
+        msu_data_seek,
+        msu_audio_stop,
+        msu_audio_resume,
+        msu_audio_repeat,
+        msu_audio_playing,
+        msu_volume
+      }),
+      .snes_vblank(vblank)
   );
 
   // core_top's datatable arbitration: the MSU host, else the save size
@@ -260,7 +294,7 @@ module tb_msu_play;
 
       .track_num(msu_track_num),
       .track_request(msu_track_request),
-      .track_mounting(msu_track_mounting),
+      .track_mounting(msu_track_mounting | hold_busy),
 
       .volume(msu_volume),
       .status_track_missing(msu_track_missing),
@@ -281,6 +315,23 @@ module tb_msu_play;
   );
 
   wire [15:0] msu_l, msu_r;
+  wire [7:0] fader_volume;
+  wire fader_play, fader_track_processing;
+
+  msu_fader fader (
+      .clk  (clk_sys),
+      .reset(snes_reset),
+
+      .volume(msu_volume),
+      .playing(msu_audio_playing),
+      .track_request(msu_track_request),
+      .audio_stop(msu_audio_stop),
+
+      .audio_volume(fader_volume),
+      .audio_play(fader_play),
+      .audio_track_processing(fader_track_processing),
+      .hold_busy(hold_busy)
+  );
 
   msu_audio audio (
       .reset(snes_reset),
@@ -288,14 +339,14 @@ module tb_msu_play;
       .clk(clk_sys),
       .clk_rate(CLK_RATE),
 
-      .ctl_volume(msu_volume),
+      .ctl_volume(fader_volume),
       .ctl_stop(msu_audio_stop),
-      .ctl_play(msu_audio_playing),
+      .ctl_play(fader_play),
       .ctl_resume(msu_audio_resume),
       .ctl_repeat(msu_audio_repeat),
 
       .track_size(msu_audio_size),
-      .track_processing(msu_track_request),
+      .track_processing(fader_track_processing),
 
       .audio_download(msu_audio_download),
       .audio_data(msu_audio_data),
@@ -346,6 +397,8 @@ module tb_msu_play;
   integer underruns = 0;
   integer loops_done = 0;
   bit started = 0;
+  bit checking = 0;  // off while a track is being selected
+  integer clicks = 0;
 
   function automatic [31:0] pattern(input integer track, input integer k);
     reg [15:0] l, r;
@@ -357,7 +410,7 @@ module tb_msu_play;
   endfunction
 
   always @(posedge clk_sys) begin
-    if (audio.sample_ce && audio.playing) begin
+    if (audio.sample_ce && audio.playing && checking) begin
       if ({audio.sample_r, audio.sample_l} !== pattern(exp_track, exp_index)) begin
         errors++;
         if (errors <= 10)
@@ -374,8 +427,26 @@ module tb_msu_play;
           loops_done++;
         end
       end
-    end else if (audio.sample_ce && audio.ctl_play && audio.fifo_empty && started) begin
+    end else if (audio.sample_ce && audio.ctl_play && audio.fifo_empty && started && checking)
+    begin
       underruns++;
+    end
+  end
+
+  // Clicks: msu_audio's output cut while its volume is above zero. The end of
+  // a track without repeat is exempt (upstream behaviour, see msu_fader.sv).
+  reg old_play = 0, old_processing = 0;
+  reg [3:0] since_stop = 4'hF;
+  always @(posedge clk_sys) begin
+    old_play <= audio.ctl_play;
+    old_processing <= audio.track_processing;
+    since_stop <= msu_audio_stop ? 4'd0 : (since_stop == 4'hF ? since_stop : since_stop + 1'd1);
+    if ((old_play && ~audio.ctl_play && since_stop > 4) ||
+        (~old_processing && audio.track_processing && audio.playing)) begin
+      if (audio.ctl_volume != 0) begin
+        clicks++;
+        $display("[%0t] CLICK: output cut at volume %0d", $time, audio.ctl_volume);
+      end
     end
   end
 
@@ -439,6 +510,9 @@ module tb_msu_play;
   // ---------------------------------------------------------------------------
   // Firmware model
 
+  bit apf_hold = 0;  // stop serving, so the test can use the bridge
+  bit apf_idle = 0;
+
   `include "apf_model.svh"
 
   initial begin
@@ -477,6 +551,11 @@ module tb_msu_play;
     bridge_write(32'hF8000000, 32'h434D0011);  // reset exit
 
     forever begin
+      if (apf_hold) begin
+        apf_idle = 1;
+        wait (!apf_hold);
+        apf_idle = 0;
+      end
       bridge_read(32'hF8001000, t0);
       if (t0[31:16] == 16'h636D) serve(t0[15:0]);
       repeat (20) @(posedge clk);
@@ -497,6 +576,7 @@ module tb_msu_play;
       loops_done = 0;
       played = 0;
       started = 0;
+      checking = 1;
     end
   endtask
 
@@ -515,14 +595,25 @@ module tb_msu_play;
     end
   endtask
 
-  task mount(input integer track);
-    reg [7:0] st;
+  // Select a track. fast: the boot scan found it, so busy must be short.
+  task mount(input integer track, input bit fast);
+    realtime t0, busy;
     begin
+      checking = 0;
       cpu_write(4, track[7:0]);
+      t0 = $realtime;
       cpu_write(5, track[15:8]);
       wait_status_clear(8'h40, 20000);  // audio busy
+      busy = $realtime - t0;
+      $display("[%0t] track %0d selected: busy for %0.1f us", $time, track, busy / 1000.0);
+      if (fast && busy > 2_500_000) begin
+        errors++;
+        $display("Busy too long for a track in the table");
+      end
     end
   endtask
+
+  string log_name;
 
   initial begin
     reg [7:0] v, st;
@@ -600,14 +691,14 @@ module tb_msu_play;
     end
 
     // A missing track
-    mount(3);
+    mount(3, 1);
     cpu_read(0, st);
     $display("[%0t] track 3: status %h", $time, st);
     if (!(st & 8'h08)) $fatal(1, "Track 3 should be missing");
 
     // Track 1, looping, past the end several times
+    mount(1, 1);
     expect_track(1, T1_SAMPLES, T1_LOOP, 1);
-    mount(1);
     cpu_read(0, st);
     if (st & 8'h08) $fatal(1, "Track 1 reported missing");
     cpu_write(6, 8'hFF);
@@ -620,8 +711,8 @@ module tb_msu_play;
 
     // Change track while playing: track 2 once, no repeat. The checker wraps
     // to 0 for the replay below.
+    mount(2, 1);
     expect_track(2, T2_SAMPLES, 0, 1);
-    mount(2);
     cpu_write(7, 8'h01);  // play
     wait_stopped();
     $display("[%0t] track 2: stopped after %0d samples", $time, played);
@@ -646,24 +737,66 @@ module tb_msu_play;
 
     // Resume: pause track 1 with resume, select it again, play on from the
     // start of the sector that was playing
+    mount(1, 1);
     expect_track(1, T1_SAMPLES, T1_LOOP, 1);
-    mount(1);
     cpu_write(7, 8'h03);
     wait (played == 6000);
     cpu_write(7, 8'h04);  // stop, keep the position for a resume
     repeat (2000) @(posedge clk_sys);
-    mount(1);
+    mount(1, 1);
     exp_index = msu_resume_sector * 256 - 2;
     played = 0;
     started = 0;
+    checking = 1;
     $display("[%0t] track 1 resumes at sector %0d", $time, msu_resume_sector);
     cpu_write(7, 8'h03);
     wait (played == 3000);
     $display("[%0t] track 1: 3000 samples after the resume", $time);
-    cpu_write(7, 8'h00);
 
-    $display("underruns: %0d, errors: %0d", underruns, errors);
-    if (errors == 0 && underruns == 0) $display("PASS: MSU-1 playback");
+    // Beyond the boot scan: opened before busy clears. Track 41 is missing.
+    mount(41, 0);
+    cpu_read(0, st);
+    if (!(st & 8'h08)) $fatal(1, "Track 41 should be missing");
+    mount(40, 0);
+    expect_track(40, T40_SAMPLES, 0, 0);
+    cpu_write(7, 8'h01);
+    wait_stopped();
+    $display("[%0t] track 40: %0d samples", $time, played);
+    if (played > T40_SAMPLES || played < T40_SAMPLES - 767) begin
+      errors++;
+      $display("Track 40: wrong length");
+    end
+
+    // Stop during playback: faded, no click
+    mount(1, 1);
+    expect_track(1, T1_SAMPLES, T1_LOOP, 1);
+    cpu_write(7, 8'h03);
+    wait (played == 2000);
+    cpu_write(7, 8'h00);
+    repeat (50000) @(posedge clk_sys);
+
+    // Read the event log the way APF saves it
+    apf_hold = 1;
+    wait (apf_idle);
+    begin
+      integer lf;
+      reg [31:0] w;
+      if (!$value$plusargs("log=%s", log_name)) log_name = "msu_play.msulog";
+      lf = $fopen(log_name, "wb");
+      for (i = 0; i < 4 + 2 * 2048; i++) begin
+        bridge_read(32'h5000_0000 + 4 * i, w);
+        $fwrite(lf, "%c%c%c%c", w[31:24], w[23:16], w[15:8], w[7:0]);
+        if (i == 0 && w != 32'h4D53554C) begin
+          errors++;
+          $display("Event log: bad magic %h", w);
+        end
+        if (i == 2) $display("Event log: %0d events", {w[7:0], w[15:8], w[23:16], w[31:24]});
+      end
+      $fclose(lf);
+    end
+
+    $display("underruns: %0d, clicks: %0d, errors: %0d", underruns, clicks, errors);
+    if (errors == 0 && underruns == 0 && clicks == 0) $display("PASS: MSU-1 playback");
     else $display("FAIL: MSU-1 playback");
     $finish;
   end
@@ -672,7 +805,7 @@ module tb_msu_play;
     // Upstream registers without a power-up value
     data_store.ram_req = 0;
     data_store.rd_seek_done = 0;
-    #200_000_000;
+    #300_000_000;
     $fatal(1, "Timeout");
   end
 endmodule

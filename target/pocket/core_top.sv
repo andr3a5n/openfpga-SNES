@@ -317,7 +317,7 @@ module core_top (
   wire agent_dt_wren;
   wire [31:0] agent_dt_wdata;
   wire agent_released;
-  wire [31:0] probe_log_rd_data;
+  wire [31:0] agent_log_rd_data;  // probe log, or MSU-1 event log
 
   // for bridge write data, we just broadcast it to all bus devices
   // for bridge read data, we have to mux it
@@ -340,8 +340,8 @@ module core_top (
       bridge_rd_data <= sd_read_data;
     end
 
-    if (MSU_PROBE && bridge_addr[31:28] == 4'h5) begin
-      bridge_rd_data <= probe_log_rd_data;
+    if ((MSU_PROBE || MSU) && bridge_addr[31:28] == 4'h5) begin
+      bridge_rd_data <= agent_log_rd_data;
     end
   end
 
@@ -663,6 +663,11 @@ module core_top (
       datatable_wren <= 1;
       datatable_data <= 32'd4096;
       datatable_addr <= 2 * 2 + 1;
+    end else if (MSU && probe_size_toggle) begin
+      // Size of the MSU-1 event log slot, data slot index 4 (msu_log.sv)
+      datatable_wren <= 1;
+      datatable_data <= 32'd16400;
+      datatable_addr <= 4 * 2 + 1;
     end else begin
       // Write sram size half of the time
       datatable_wren <= 1;
@@ -699,6 +704,7 @@ module core_top (
   wire msu_ram_req;
   wire msu_ram_ack;
   wire [63:0] msu_ram_dout;
+  wire [63:0] msu_dbg;
 
   wire snes_reset;
 
@@ -730,7 +736,7 @@ module core_top (
           .bridge_wr(bridge_wr),
           .bridge_wr_data(bridge_wr_data),
           .bridge_rd(bridge_rd),
-          .log_rd_data(probe_log_rd_data),
+          .log_rd_data(agent_log_rd_data),
 
           .scr_we  (probe_scr_we),
           .scr_addr(probe_scr_addr),
@@ -765,9 +771,11 @@ module core_top (
           .dt_q    (datatable_q),
 
           .bridge_wr(bridge_wr),
+          .bridge_rd(bridge_rd),
           .bridge_addr(bridge_addr),
           .bridge_wr_data(bridge_wr_data),
           .bridge_endian_little(bridge_endian_little),
+          .log_rd_data(agent_log_rd_data),
 
           .sram_a(sram_a),
           .sram_dq(sram_dq),
@@ -794,10 +802,12 @@ module core_top (
           .msu_ram_addr(msu_ram_addr),
           .msu_ram_req(msu_ram_req),
           .msu_ram_ack(msu_ram_ack),
-          .msu_ram_dout(msu_ram_dout)
+          .msu_ram_dout(msu_ram_dout),
+
+          .msu_dbg(msu_dbg),
+          .snes_vblank(v_blank)
       );
 
-      assign probe_log_rd_data = 0;
       assign probe_scr_we = 0;
       assign probe_scr_addr = 0;
       assign probe_scr_data = 0;
@@ -815,7 +825,7 @@ module core_top (
       assign agent_dt_wren = 0;
       assign agent_dt_wdata = 0;
       assign agent_released = 1;
-      assign probe_log_rd_data = 0;
+      assign agent_log_rd_data = 0;
       assign probe_scr_we = 0;
       assign probe_scr_addr = 0;
       assign probe_scr_data = 0;
@@ -1169,7 +1179,8 @@ module core_top (
       .msu_ram_addr(msu_ram_addr),
       .msu_ram_req(msu_ram_req),
       .msu_ram_ack(msu_ram_ack),
-      .msu_ram_dout(msu_ram_dout)
+      .msu_ram_dout(msu_ram_dout),
+      .msu_dbg(msu_dbg)
   );
 
   // Video

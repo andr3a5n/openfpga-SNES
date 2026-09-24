@@ -5,7 +5,7 @@ constant DEBUG = 0
 
 constant rom_dataslot = 0
 constant save_dataslot = 10
-constant probe_dataslot = 30 // MSU-1 probe builds only (-d MSU_PROBE)
+constant log_dataslot = 30 // MSU-1 probe log (-d MSU_PROBE) or MSU-1 event log (-d MSU)
 
 // Host init command
 constant host_init = 0x4002
@@ -236,7 +236,13 @@ loadf r1 // Load Save
 
 if {defined MSU_PROBE} {
 // Load the probe log slot too, so APF treats it exactly like the save slot
-ld r1,#probe_dataslot
+ld r1,#log_dataslot
+loadf r1
+}
+
+if {defined MSU} {
+// The same for the MSU-1 event log, which the Pocket then saves on exit
+ld r1,#log_dataslot
 loadf r1
 }
 

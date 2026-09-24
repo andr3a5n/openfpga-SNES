@@ -6,8 +6,12 @@
 //   * each audio_req/audio_seek is answered with an audio_download window of
 //     512 16-bit words (one 1 KB sector), audio_ack high while it lasts
 //   * data file reads use msu_data_store's toggle handshake, served from SRAM
+// It also keeps the MSU-1 event log (msu_log.sv), read over the bridge at
+// 0x5xxxxxxx.
 
-module msu_pocket #(
+module msu_pocket
+  import msu_ev::*;
+#(
     parameter [15:0] AUDIO_SLOT = 16'd20,
     parameter [15:0] DATA_SLOT = 16'd21,
     parameter [7:0] AUDIO_SIZE_WORD = 8'd5,
@@ -41,10 +45,12 @@ module msu_pocket #(
     input  wire [31:0] dt_q,
 
     // Bridge (clk_74a)
-    input wire        bridge_wr,
-    input wire [31:0] bridge_addr,
-    input wire [31:0] bridge_wr_data,
-    input wire        bridge_endian_little,
+    input  wire        bridge_wr,
+    input  wire        bridge_rd,
+    input  wire [31:0] bridge_addr,
+    input  wire [31:0] bridge_wr_data,
+    input  wire        bridge_endian_little,
+    output wire [31:0] log_rd_data,
 
     // SRAM
     output wire [16:0] sram_a,
@@ -73,7 +79,11 @@ module msu_pocket #(
     input  wire [28:0] msu_ram_addr,
     input  wire        msu_ram_req,
     output reg         msu_ram_ack = 0,
-    output reg  [63:0] msu_ram_dout = 0
+    output reg  [63:0] msu_ram_dout = 0,
+
+    // For the event log (clk_sys): MAIN_SNES msu_dbg, and vertical blank
+    input wire [63:0] msu_dbg,
+    input wire        snes_vblank
 );
   // Data file store in SRAM, after the sector queue
   localparam [17:0] DATA_BASE = 18'h1_0000;
@@ -85,6 +95,10 @@ module msu_pocket #(
   wire host_track_missing;
   wire host_sector_ready;
   wire [31:0] data_loaded;
+
+  wire evc_valid, evs_valid;
+  wire [7:0] evc_type, evs_type;
+  wire [23:0] evc_data, evs_data;
 
   // ---------------------------------------------------------------------------
   // Clock crossing: requests are toggles with a payload held stable
@@ -187,7 +201,14 @@ module msu_pocket #(
 
       .enable(host_enable),
       .booted(booted),
-      .data_loaded(data_loaded)
+      .data_loaded(data_loaded),
+
+      .evc_valid(evc_valid),
+      .evc_type (evc_type),
+      .evc_data (evc_data),
+      .evs_valid(evs_valid),
+      .evs_type (evs_type),
+      .evs_data (evs_data)
   );
 
   always @(posedge clk_74a) begin
@@ -353,4 +374,140 @@ module msu_pocket #(
       dq_busy <= 0;
     end
   end
+
+  // ---------------------------------------------------------------------------
+  // Event log. SNES-side events are collected here, one per cycle.
+
+  wire [7:0] dbg_volume = msu_dbg[7:0];
+  wire [2:0] dbg_ctrl = msu_dbg[10:8];  // {resume, repeat, playing}
+  wire dbg_end = msu_dbg[11];
+  wire dbg_dseek = msu_dbg[12];
+  wire dbg_dack = msu_dbg[13];
+  wire [23:0] dbg_rom = msu_dbg[39:16];
+  wire [23:0] dbg_daddr = msu_dbg[63:40];
+
+  reg ev_valid = 0;
+  reg [7:0] ev_type = 0;
+  reg [23:0] ev_data = 0;
+
+  reg p_track = 0, p_busy_end = 0, p_ctrl = 0, p_volume = 0, p_end = 0;
+  reg p_dseek = 0, p_dready = 0, p_rom = 0, p_reset = 0;
+  reg [15:0] c_track = 0;
+  reg [2:0] c_ctrl = 0, old_ctrl = 0;
+  reg [7:0] c_volume = 0, logged_volume = 0;
+  reg [23:0] c_daddr = 0, c_rom = 0;
+  reg c_reset = 0;
+  reg old_req_ev = 0, old_dseek = 0, old_dack = 0, old_vblank = 0, old_reset = 0;
+  reg [2:0] frame = 0;
+
+  always @(posedge clk_sys) begin
+    ev_valid <= 0;
+
+    old_req_ev <= msu_track_request;
+    old_dseek <= dbg_dseek;
+    old_dack <= dbg_dack;
+    old_vblank <= snes_vblank;
+    old_ctrl <= dbg_ctrl;
+    old_reset <= snes_reset;
+
+    if (msu_track_request && ~old_req_ev) begin
+      p_track <= 1;
+      c_track <= msu_track_num;
+    end
+    if (~msu_track_request && old_req_ev) p_busy_end <= 1;
+    if (dbg_ctrl != old_ctrl) begin
+      p_ctrl <= 1;
+      c_ctrl <= dbg_ctrl;
+    end
+    if (dbg_end) p_end <= 1;
+    if (dbg_dseek && ~old_dseek) begin
+      p_dseek <= 1;
+      c_daddr <= dbg_daddr;
+    end
+    if (dbg_dack && ~old_dack) p_dready <= 1;
+    if (snes_reset != old_reset) begin
+      p_reset <= 1;
+      c_reset <= snes_reset;
+    end
+
+    // Per frame: the volume if it changed (every 4th frame), a ROM address
+    // sample (every 8th)
+    if (snes_vblank && ~old_vblank) begin
+      frame <= frame + 1'd1;
+      if (frame[1:0] == 0 && dbg_volume != logged_volume) begin
+        p_volume <= 1;
+        c_volume <= dbg_volume;
+        logged_volume <= dbg_volume;
+      end
+      if (frame == 0) begin
+        p_rom <= 1;
+        c_rom <= dbg_rom;
+      end
+    end
+
+    if (~ev_valid) begin
+      ev_valid <= 1;
+      if (p_reset) begin
+        p_reset <= 0;
+        ev_type <= EV_S_RESET;
+        ev_data <= {23'd0, c_reset};
+      end else if (p_track) begin
+        p_track <= 0;
+        ev_type <= EV_S_TRACK;
+        ev_data <= {8'd0, c_track};
+      end else if (p_busy_end) begin
+        p_busy_end <= 0;
+        ev_type <= EV_S_BUSY_END;
+        ev_data <= 0;
+      end else if (p_ctrl) begin
+        p_ctrl <= 0;
+        ev_type <= EV_S_CTRL;
+        ev_data <= {21'd0, c_ctrl};
+      end else if (p_end) begin
+        p_end <= 0;
+        ev_type <= EV_S_END;
+        ev_data <= 0;
+      end else if (p_dseek) begin
+        p_dseek <= 0;
+        ev_type <= EV_S_DSEEK;
+        ev_data <= c_daddr;
+      end else if (p_dready) begin
+        p_dready <= 0;
+        ev_type <= EV_S_DREADY;
+        ev_data <= 0;
+      end else if (p_volume) begin
+        p_volume <= 0;
+        ev_type <= EV_S_VOLUME;
+        ev_data <= {16'd0, c_volume};
+      end else if (p_rom) begin
+        p_rom <= 0;
+        ev_type <= EV_S_ROM;
+        ev_data <= c_rom;
+      end else begin
+        ev_valid <= 0;
+      end
+    end
+  end
+
+  msu_log log (
+      .clk(clk_74a),
+      .clk_sys(clk_sys),
+
+      .a_valid(evc_valid),
+      .a_type (evc_type),
+      .a_data (evc_data),
+
+      .b_valid(evs_valid),
+      .b_type (evs_type),
+      .b_data (evs_data),
+
+      .s_valid(ev_valid),
+      .s_type (ev_type),
+      .s_data (ev_data),
+
+      .bridge_rd(bridge_rd),
+      .bridge_addr(bridge_addr),
+      .bridge_endian_little(bridge_endian_little),
+      .rd_data(log_rd_data)
+  );
 endmodule

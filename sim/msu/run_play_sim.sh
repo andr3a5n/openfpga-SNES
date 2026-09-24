@@ -26,10 +26,13 @@ iverilog -g2012 -Wall -Wno-timescale -Wno-implicit-dimensions -o "$WORK/tb_msu_p
   "$ROOT/sim/msu/dcfifo_sim.v" \
   "$ROOT/sim/msu/cegen_sim.v" \
   "$ROOT/target/pocket/core_bridge_cmd.v" \
+  "$ROOT/target/pocket/msu/msu_ev.sv" \
   "$ROOT/target/pocket/msu/msu_tgt_cmd.sv" \
   "$ROOT/target/pocket/msu/msu_path.sv" \
   "$ROOT/target/pocket/msu/msu_sram.sv" \
   "$ROOT/target/pocket/msu/msu_host.sv" \
+  "$ROOT/target/pocket/msu/msu_log.sv" \
+  "$ROOT/target/pocket/msu/msu_fader.sv" \
   "$ROOT/target/pocket/msu/msu_pocket.sv" \
   "$WORK/MSU_sim.sv" \
   "$ROOT/rtl/upstream/chip/MSU1/msu_audio.v" \
@@ -41,6 +44,9 @@ vvp -n "$WORK/tb_msu_play.vvp" +dir="$WORK/msutest" +nomsu | tee "$WORK/tb_msu_n
   grep -v "APF 0180"
 grep -q "^PASS" "$WORK/tb_msu_nomsu.log"
 
-vvp -n "$WORK/tb_msu_play.vvp" +dir="$WORK/msutest" "$@" | tee "$WORK/tb_msu_play.log" |
-  grep -v "APF 0180"
+vvp -n "$WORK/tb_msu_play.vvp" +dir="$WORK/msutest" +log="$WORK/msu_play.msulog" "$@" |
+  tee "$WORK/tb_msu_play.log" | grep -v "APF 0180"
 grep -q "^PASS" "$WORK/tb_msu_play.log"
+
+python3 "$ROOT/tools/msu_log.py" "$WORK/msu_play.msulog" > "$WORK/msu_play_log.txt"
+echo "Event log decoded to $WORK/msu_play_log.txt"

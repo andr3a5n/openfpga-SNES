@@ -35,6 +35,16 @@
         "deferload": true,
         "parameters": "0x8",
         "extensions": ["msu"]
+      },
+      {
+        "name": "MSU-1 Log",
+        "id": 30,
+        "required": false,
+        "parameters": "0x84",
+        "nonvolatile": true,
+        "extensions": ["msulog"],
+        "address": "0x50000000",
+        "size_maximum": "0x4010"
       }
     ]
   }
