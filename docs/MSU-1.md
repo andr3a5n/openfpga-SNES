@@ -407,6 +407,29 @@ hardware:
 Hardware: the test ROM, several real packs, long play, and loop points by
 ear.
 
+First hardware test (beta 1, firmware 2.7): the test ROM played correctly,
+including left/right and the loop point, and Super Mario Kart and Super
+Metroid packs played. Found: clicks when a track stops or starts; in Super
+Mario Kart one or two green or white frames at each music change; in Super
+Metroid a black screen when some tracks start, with the music going on.
+Beta 2 (see [MSU-1-beta.md](MSU-1-beta.md)):
+
+- The audio-busy bit lasted 20-40 ms per track change (open plus first read),
+  where MiSTer and emulators answer within microseconds. MSU-1 patches often
+  wait for it in the NMI handler, which then overruns by one or two frames.
+  The host now opens every track once at boot and keeps the sizes in a
+  table; a track change is answered from it in about 10 us, and the file is
+  opened and read afterwards (`msu_host.sv`).
+- `msu_fader.sv` fades the old track out over 1.5 ms before a stop or a track
+  change takes effect, fades new playback in, and smooths volume steps.
+- `msu_log.sv` records MSU-1 events with microsecond times into a nonvolatile
+  data slot the Pocket saves on exit; `tools/msu_log.py` decodes it.
+- Test ROM track 3 is a measurement signal for recordings. Modelling the
+  output path showed that holding the latest 44.1 kHz sample for the 48 kHz
+  output aliases: a 1 kHz tone gets a false tone at 4.9 kHz at -33 dB, a
+  5 kHz tone one at 8.9 kHz at -18 dB. A proper resampler is the next
+  sound-quality step, once a recording confirms it.
+
 **Phase 2: data port.** SDRAM port-1 preload and the `msu_data_store` adapter,
 simulated against the port-0 ROM traffic of the SA-1/GSU builds. Hardware: a
 pack that reads the data port.

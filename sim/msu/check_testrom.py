@@ -14,7 +14,7 @@ import msu_testpack as tp  # noqa: E402
 
 
 class MSU:
-    def __init__(self, present=True, data_ok=True, tracks=(1, 2), once_frames=30):
+    def __init__(self, present=True, data_ok=True, tracks=(1, 2, 3), once_frames=30):
         self.present = present
         self.data_ok = data_ok
         self.tracks = tracks
@@ -308,7 +308,7 @@ def run(name, msu, buttons, frames, expect_colors, expect_writes=None, expect_vo
         ok = ok and msu.volume == expect_volume
     names = {v: k for k, v in dict(grey=tp.GREY, red=tp.RED, magenta=tp.MAGENTA,
                                    yellow=tp.YELLOW, green=tp.GREEN, blue=tp.BLUE,
-                                   white=tp.WHITE).items()}
+                                   white=tp.WHITE, cyan=tp.CYAN).items()}
     shown = [names.get(c, hex(c)) for c in machine.colors]
     print("%-4s %-22s colours %s" % ("ok" if ok else "FAIL", name, " ".join(shown)))
     if not ok:
@@ -348,6 +348,9 @@ def main():
              (7, 0)], expect_volume=0xBF),
         run("track 2 missing", MSU(tracks=(1,)), {10: tp.PAD_B}, 20,
             [g.GREY, g.GREEN, g.YELLOW]),
+        run("track 3 (analysis)", MSU(once_frames=20), {10: tp.PAD_R}, 40,
+            [g.GREY, g.GREEN, g.CYAN, g.GREY],
+            [(4, 1), (5, 0), (6, 0xFF), (7, 3), (4, 3), (5, 0), (6, 0xFF), (7, 1)]),
     ]
     if all(results):
         print("PASS: test ROM")

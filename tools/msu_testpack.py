@@ -18,10 +18,16 @@ port, then plays msu1test-1.pcm. The backdrop colour shows the state:
   green    track 1 playing: a tone on the left, the same on the right, then
            an arpeggio that loops
   blue     track 2 playing: three falling notes, once; grey when it ends
+  cyan     track 3 playing: the analysis signal below, once; grey when it ends
   white    track 1 paused with resume
 
-  A: track 1   B: track 2   X: pause track 1 / resume it   Y: stop
-  Up/Down: MSU-1 volume
+  A: track 1   B: track 2   R: track 3   X: pause track 1 / resume it
+  Y: stop      Up/Down: MSU-1 volume
+
+Track 3 is a measurement signal for recordings of the Pocket's output (see
+ANALYSIS_SECTIONS): silence, a 1 kHz tone on both, the left and the right
+channel, a 20 Hz - 20 kHz sweep and single-sample clicks. Every sample is
+known, so a capture can be compared with it exactly.
 """
 
 import argparse
@@ -36,6 +42,7 @@ SIM_NAME = "msutest"
 SIM_TRACKS = {
     1: (12000, 5000),  # longer than the queue in simulation (32 KB)
     2: (3000, 0),      # shorter than one 16 KB read
+    40: (2000, 0),     # beyond the boot scan (it stops after 16 missing tracks)
 }
 SIM_DATA_SIZE = 100 * 1024 + 3
 
@@ -138,14 +145,15 @@ class Asm65816:
 
 
 # Backdrop colours, BGR555
-GREY, RED, MAGENTA, YELLOW, GREEN, BLUE, WHITE = (
-    0x4210, 0x001F, 0x7C1F, 0x03FF, 0x03E0, 0x7C00, 0x7FFF)
+GREY, RED, MAGENTA, YELLOW, GREEN, BLUE, WHITE, CYAN = (
+    0x4210, 0x001F, 0x7C1F, 0x03FF, 0x03E0, 0x7C00, 0x7FFF, 0x7FE0)
 
 # Direct page
 DP_EXPECT, DP_VOLUME, DP_STATE, DP_PREV, DP_PRESSED = 0x00, 0x02, 0x04, 0x06, 0x08
 
 # Joypad 1 bits as read from $4218 (16-bit)
 PAD_A, PAD_X, PAD_B, PAD_Y, PAD_UP, PAD_DOWN = 0x0080, 0x0040, 0x8000, 0x4000, 0x0800, 0x0400
+PAD_R = 0x0010
 
 
 def test_rom():
@@ -216,14 +224,14 @@ def test_rom():
     a.lda_dp(DP_PREV); a.eor_imm16(0xFFFF); a.and_(0x4218); a.sta_dp(DP_PRESSED)
     a.lda(0x4218); a.sta_dp(DP_PREV)
 
-    for mask, target in ((PAD_A, "on_a"), (PAD_B, "on_b"), (PAD_X, "on_x"),
+    for mask, target in ((PAD_A, "on_a"), (PAD_B, "on_b"), (PAD_R, "on_r"), (PAD_X, "on_x"),
                          (PAD_Y, "on_y"), (PAD_UP, "on_up"), (PAD_DOWN, "on_down")):
         a.lda_dp(DP_PRESSED); a.and_imm16(mask); a.beq("skip_" + target)
         a.sep(0x20); a.jsr(target); a.rep(0x20)
         a.label("skip_" + target)
     a.sep(0x20)
 
-    # Track 2 plays once: grey when it has stopped
+    # Tracks 2 and 3 play once: grey when they have stopped
     a.lda_dp(DP_STATE); a.cmp_imm8(2); a.bne("wait_active")
     a.lda(0x2000); a.and_imm8(0x10); a.bne("wait_active")
     a.stz_dp(DP_STATE)
@@ -242,6 +250,14 @@ def test_rom():
     a.lda_imm8(2); a.sta_dp(DP_STATE)
     a.ldx_imm16(BLUE); a.jsr("set_color")
     a.label("on_b_done")
+    a.rts()
+
+    a.label("on_r")
+    a.lda_imm8(3); a.jsr("select_track"); a.bcs("on_r_done")
+    a.lda_imm8(0x01); a.sta(0x2007)
+    a.lda_imm8(2); a.sta_dp(DP_STATE)
+    a.ldx_imm16(CYAN); a.jsr("set_color")
+    a.label("on_r_done")
     a.rts()
 
     a.label("on_x")
@@ -340,6 +356,54 @@ def tone(freq, seconds, amp=0.3, attack=0.01, release=0.05):
     return out
 
 
+# Track 3, the measurement signal: (description, seconds). Tones and the
+# sweep are at -6 dBFS with 5 ms fades; clicks are single samples at
+# +-0.5 full scale, alternating left and right.
+ANALYSIS_SECTIONS = [
+    ("silence", 1.0),
+    ("1 kHz both", 2.0),
+    ("1 kHz left", 1.0),
+    ("1 kHz right", 1.0),
+    ("silence", 0.5),
+    ("sweep 20 Hz - 20 kHz both", 10.0),
+    ("silence", 0.5),
+    ("clicks every 100 ms", 2.0),
+    ("silence", 1.0),
+]
+
+
+def analysis_signal():
+    amp = 0.5  # -6 dBFS
+    left, right = [], []
+
+    def faded(samples):
+        n, fade = len(samples), int(0.005 * RATE)
+        return [v * min(1.0, i / fade, (n - i) / fade) for i, v in enumerate(samples)]
+
+    for name, seconds in ANALYSIS_SECTIONS:
+        n = int(seconds * RATE)
+        if name == "silence":
+            l = r = [0.0] * n
+        elif name.startswith("1 kHz"):
+            t = faded([amp * math.sin(2 * math.pi * 1000 * i / RATE) for i in range(n)])
+            z = [0.0] * n
+            l = z if name.endswith("right") else t
+            r = z if name.endswith("left") else t
+        elif name.startswith("sweep"):
+            f0, f1 = 20.0, 20000.0
+            k = math.log(f1 / f0)
+            t = faded([amp * math.sin(2 * math.pi * f0 * seconds / k *
+                                      (math.exp(k * i / n) - 1)) for i in range(n)])
+            l = r = t
+        else:
+            l, r = [0.0] * n, [0.0] * n
+            for j, i in enumerate(range(int(0.05 * RATE), n, int(0.1 * RATE))):
+                (l if j % 2 == 0 else r)[i] = 0.5 if j % 4 < 2 else -0.5
+        left += l
+        right += r
+    return left, right
+
+
 def write_tone_pcm(path, parts, loop):
     """parts: [(left samples, right samples)], floats in -1..1"""
     with open(path, "wb") as f:
@@ -375,6 +439,9 @@ def cmd_hw(args):
         t = tone(freq, 0.5, amp=0.25, release=0.3)
         chime.append((t, t))
     write_tone_pcm(os.path.join(out, "%s-2.pcm" % HW_NAME), chime, loop=0)
+
+    # Track 3: the measurement signal, played once
+    write_tone_pcm(os.path.join(out, "%s-3.pcm" % HW_NAME), [analysis_signal()], loop=0)
     print("Wrote the hardware test pack to", out)
 
 
