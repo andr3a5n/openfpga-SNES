@@ -310,25 +310,31 @@ rarely used chip or an optional feature go.
 
 Phase 1 settled on three MSU-1 bitstreams: DSP-n and CX4 together (the
 default), SA-1, and Super FX. SPCSDD1 and PAL stay as they are, without
-MSU-1. Measured with Quartus 21.1 (`msu` locally, `msu_sa1` and `msu_gsu` in
-CI run 2 of the MSU-1 Beta workflow):
+MSU-1. Measured with Quartus 21.1 in the CI runs of the MSU-1 Beta
+workflow (beta 2: run 4; beta 1: run 2):
 
 | | `msu` (DSP-n, CX4) | `msu_sa1` (SA-1) | `msu_gsu` (Super FX) | `main` today (four chips, no MSU-1) |
 |---|---|---|---|---|
-| Logic (ALMs) | 14,953 (81%) | 14,630 (79%) | 13,804 (75%) | 17,878 (97%) |
-| RAM blocks (of 308) | 262 | 213 | 212 | 257 |
+| Logic (ALMs), beta 2 | 15,703 (85%) | 15,279 (83%) | 14,605 (79%) | 17,878 (97%) |
+| Logic (ALMs), beta 1 | 14,953 (81%) | 14,630 (79%) | 13,804 (75%) | |
+| RAM blocks (of 308), beta 2 | 279 | 230 | 229 | 257 |
 | DSP blocks | 22 | 21 | 23 | 24 |
-| Worst setup slack, clk_sys / clk_mem | -4.8 / -2.7 ns | -6.0 / -2.8 ns | -3.8 / -2.4 ns | -6.7 / -3.4 ns |
-| Worst setup slack, clk_74a | +2.2 ns | +1.7 ns | +1.9 ns | |
+| Worst setup slack clk_sys / clk_mem, beta 2 | -5.7 / -1.9 ns | -5.2 / -3.9 ns | -4.7 / -2.2 ns | -6.7 / -3.4 ns |
+| Worst setup slack clk_74a, beta 2 | +1.6 ns | +2.1 ns | +1.9 ns | |
 | Hold | positive | positive | positive | |
 
-MSU-1 itself takes about 1,780 ALMs: `msu_pocket` (host, SRAM, clock
-crossing) 1,334, `msu_audio` 234, `msu_data_store` 131, `MSU` 81. None of
-the 2,000 worst failing paths on either SNES clock touches MSU-1 logic; the
-violations are the core's own, as in the baseline; every MSU-1 bitstream
-stays inside the slack `main` is released with. The normal `ntsc` build
-synthesises to exactly the same registers, memory and DSP use as before
-phase 1.
+MSU-1 itself took about 1,780 ALMs in beta 1: `msu_pocket` (host, SRAM,
+clock crossing) 1,334, `msu_audio` 234, `msu_data_store` 131, `MSU` 81.
+Beta 2 adds about 750 ALMs and 17 RAM blocks for the event log (16 blocks),
+the track table and the fader. In the `msu` build of both betas, none of
+the 2,000 worst failing paths on clk_sys touches MSU-1 logic (not checked
+for the SA-1 and Super FX builds); the violations are the core's own, as in
+the baseline. clk_sys stays within `main`'s slack in every build.
+clk_mem carries no MSU-1 logic; its slack moves with placement from compile
+to compile (the SA-1 build had -2.8 ns in beta 1 and -3.9 ns in beta 2,
+against `main`'s -3.4 ns). The normal `ntsc` build synthesises to exactly
+the same registers, memory and DSP use as before phase 1, checked again for
+beta 2.
 
 ## Phase 0 results (firmware 2.7)
 
