@@ -310,24 +310,25 @@ rarely used chip or an optional feature go.
 
 Phase 1 settled on three MSU-1 bitstreams: DSP-n and CX4 together (the
 default), SA-1, and Super FX. SPCSDD1 and PAL stay as they are, without
-MSU-1. Measured on the default one (`generate.tcl msu`, Quartus 21.1):
+MSU-1. Measured with Quartus 21.1 (`msu` locally, `msu_sa1` and `msu_gsu` in
+CI run 2 of the MSU-1 Beta workflow):
 
-| | `msu` (DSP-n, CX4, MSU-1) | `main` today (four chips) |
-|---|---|---|
-| Logic (ALMs) | 14,953 / 18,480 (81%) | 17,878 (97%) |
-| RAM blocks | 262 / 308 | 257 / 308 |
-| DSP blocks | 22 | 24 |
-| Worst setup slack, clk_sys / clk_mem | -4.8 / -2.7 ns | -6.7 / -3.4 ns |
-| Worst setup slack, clk_74a | +2.2 ns | |
-| Hold | positive on every clock | |
+| | `msu` (DSP-n, CX4) | `msu_sa1` (SA-1) | `msu_gsu` (Super FX) | `main` today (four chips, no MSU-1) |
+|---|---|---|---|---|
+| Logic (ALMs) | 14,953 (81%) | 14,630 (79%) | 13,804 (75%) | 17,878 (97%) |
+| RAM blocks (of 308) | 262 | 213 | 212 | 257 |
+| DSP blocks | 22 | 21 | 23 | 24 |
+| Worst setup slack, clk_sys / clk_mem | -4.8 / -2.7 ns | -6.0 / -2.8 ns | -3.8 / -2.4 ns | -6.7 / -3.4 ns |
+| Worst setup slack, clk_74a | +2.2 ns | +1.7 ns | +1.9 ns | |
+| Hold | positive | positive | positive | |
 
 MSU-1 itself takes about 1,780 ALMs: `msu_pocket` (host, SRAM, clock
 crossing) 1,334, `msu_audio` 234, `msu_data_store` 131, `MSU` 81. None of
 the 2,000 worst failing paths on either SNES clock touches MSU-1 logic; the
-violations are the core's own, as in the baseline. The SA-1 (2,756 ALMs) and
-Super FX (1,793) bitstreams carry less than DSP-n plus CX4 (3,410), so they
-fit with more room. The normal `ntsc` build synthesises to exactly the same
-registers, memory and DSP use as before phase 1.
+violations are the core's own, as in the baseline; every MSU-1 bitstream
+stays inside the slack `main` is released with. The normal `ntsc` build
+synthesises to exactly the same registers, memory and DSP use as before
+phase 1.
 
 ## Phase 0 results (firmware 2.7)
 
