@@ -1,5 +1,11 @@
 ################################################################################
-# How to create a tag to launch the workflow
+# Builds the three SNES bitstreams and packages the core.
+#
+# Run it from the Actions tab ("Run workflow", pick any branch). The artifact
+# "agg23.SNES" holds the release zip for the SD card.
+#
+# A GitHub release is only created for a pushed tag, or when "release" is
+# ticked on a manual run:
 # git tag -a "0.1.0" -m "Release v0.1.0"
 # git push origin --tags
 ################################################################################
@@ -7,9 +13,16 @@
 name: Build/Release
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a GitHub release"
+        type: boolean
+        default: false
   push:
     branches:
       - master
+    tags:
+      - "*"
   pull_request:
 
 permissions:
@@ -62,9 +75,15 @@ jobs:
           }
 
           build_type=$(map_value "${{ matrix.core }}")
-          cmd="docker run --rm -v ${{ github.workspace }}:/build raetro/quartus:21.1 quartus_sh -t generate.tcl $build_type"
+          cmd="docker run --rm -v ${{ github.workspace }}:/build ghcr.io/raetro/quartus:21.1 quartus_sh -t generate.tcl $build_type"
           echo "Running command: $cmd"
           eval $cmd
+
+      - name: "📊 Fit and timing summary"
+        if: always()
+        run: |
+          echo "## ${{ matrix.core }}" >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/fit_summary.sh >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload failure artifact
         uses: actions/upload-artifact@v4
@@ -114,10 +133,10 @@ jobs:
 
       - name: "Release"
         run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            python3 .github/publish/release.py --norelease
-          else
+          if [ "${{ github.ref_type }}" == "tag" ] || [ "${{ inputs.release }}" == "true" ]; then
             python3 .github/publish/release.py
+          else
+            python3 .github/publish/release.py --norelease
           fi
 
       - name: "Upload Actions artifact"
