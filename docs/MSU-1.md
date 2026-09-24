@@ -308,6 +308,27 @@ which the probe is about 2,800. A plain bitstream therefore leaves roughly
 and a larger download. Only if a combination still does not fit does a
 rarely used chip or an optional feature go.
 
+Phase 1 settled on three MSU-1 bitstreams: DSP-n and CX4 together (the
+default), SA-1, and Super FX. SPCSDD1 and PAL stay as they are, without
+MSU-1. Measured on the default one (`generate.tcl msu`, Quartus 21.1):
+
+| | `msu` (DSP-n, CX4, MSU-1) | `main` today (four chips) |
+|---|---|---|
+| Logic (ALMs) | 14,953 / 18,480 (81%) | 17,878 (97%) |
+| RAM blocks | 262 / 308 | 257 / 308 |
+| DSP blocks | 22 | 24 |
+| Worst setup slack, clk_sys / clk_mem | -4.8 / -2.7 ns | -6.7 / -3.4 ns |
+| Worst setup slack, clk_74a | +2.2 ns | |
+| Hold | positive on every clock | |
+
+MSU-1 itself takes about 1,780 ALMs: `msu_pocket` (host, SRAM, clock
+crossing) 1,334, `msu_audio` 234, `msu_data_store` 131, `MSU` 81. None of
+the 2,000 worst failing paths on either SNES clock touches MSU-1 logic; the
+violations are the core's own, as in the baseline. The SA-1 (2,756 ALMs) and
+Super FX (1,793) bitstreams carry less than DSP-n plus CX4 (3,410), so they
+fit with more room. The normal `ntsc` build synthesises to exactly the same
+registers, memory and DSP use as before phase 1.
+
 ## Phase 0 results (firmware 2.7)
 
 The probe ran on a Pocket with firmware 2.7 against the generated test set.
