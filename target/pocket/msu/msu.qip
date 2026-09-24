@@ -4,3 +4,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_probe_rom.sv"]
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_probe.sv"]
 set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_probe_overlay.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_sram.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_host.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE    [file join $::quartus(qip_path) "msu_pocket.sv"]

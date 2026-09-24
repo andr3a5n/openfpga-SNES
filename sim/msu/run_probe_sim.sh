@@ -14,6 +14,7 @@ fi
 
 iverilog -g2012 -Wall -Wno-timescale -o "$WORK/tb_msu_probe.vvp" \
   -s tb_msu_probe \
+  -I "$ROOT/sim/msu" \
   "$ROOT/sim/msu/tb_msu_probe.sv" \
   "$ROOT/sim/msu/mf_datatable_sim.v" \
   "$ROOT/target/pocket/core_bridge_cmd.v" \

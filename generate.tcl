@@ -17,6 +17,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "NTSC"
   set_parameter -name PAL_PLL -entity core_top '0
   set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '1
   set_parameter -name USE_SDD1 -entity MAIN_SNES '0
@@ -30,6 +31,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "PAL"
   set_parameter -name PAL_PLL -entity core_top '1
   set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '1
   set_parameter -name USE_SDD1 -entity MAIN_SNES '0
@@ -43,6 +45,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "NTSC SPC"
   set_parameter -name PAL_PLL -entity core_top '0
   set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '0
   set_parameter -name USE_SDD1 -entity MAIN_SNES '1
@@ -56,6 +59,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "NONE"
   set_parameter -name PAL_PLL -entity core_top '0
   set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '0
   set_parameter -name USE_SDD1 -entity MAIN_SNES '0
@@ -69,6 +73,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "NONE PAL"
   set_parameter -name PAL_PLL -entity core_top '1
   set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '0
   set_parameter -name USE_SDD1 -entity MAIN_SNES '0
@@ -83,6 +88,7 @@ if { [lindex $argv 0] == "ntsc" } {
   puts "MSU PROBE"
   set_parameter -name PAL_PLL -entity core_top '0
   set_parameter -name MSU_PROBE -entity core_top '1
+  set_parameter -name MSU -entity core_top '0
 
   set_parameter -name USE_CX4 -entity MAIN_SNES '0
   set_parameter -name USE_SDD1 -entity MAIN_SNES '0
@@ -92,6 +98,51 @@ if { [lindex $argv 0] == "ntsc" } {
   set_parameter -name USE_SPC7110 -entity MAIN_SNES '0
   set_parameter -name USE_BSX -entity MAIN_SNES '0
   set_parameter -name USE_MSU -entity MAIN_SNES '0
+} elseif { [lindex $argv 0] == "msu" } {
+  # MSU-1 beta core: no chip, DSP-n or CX4 games, see docs/MSU-1.md
+  puts "MSU"
+  set_parameter -name PAL_PLL -entity core_top '0
+  set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '1
+
+  set_parameter -name USE_CX4 -entity MAIN_SNES '1
+  set_parameter -name USE_SDD1 -entity MAIN_SNES '0
+  set_parameter -name USE_GSU -entity MAIN_SNES '0
+  set_parameter -name USE_SA1 -entity MAIN_SNES '0
+  set_parameter -name USE_DSPn -entity MAIN_SNES '1
+  set_parameter -name USE_SPC7110 -entity MAIN_SNES '0
+  set_parameter -name USE_BSX -entity MAIN_SNES '0
+  set_parameter -name USE_MSU -entity MAIN_SNES '1
+} elseif { [lindex $argv 0] == "msu_sa1" } {
+  # MSU-1 beta core: SA-1 games, see docs/MSU-1.md
+  puts "MSU SA1"
+  set_parameter -name PAL_PLL -entity core_top '0
+  set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '1
+
+  set_parameter -name USE_CX4 -entity MAIN_SNES '0
+  set_parameter -name USE_SDD1 -entity MAIN_SNES '0
+  set_parameter -name USE_GSU -entity MAIN_SNES '0
+  set_parameter -name USE_SA1 -entity MAIN_SNES '1
+  set_parameter -name USE_DSPn -entity MAIN_SNES '0
+  set_parameter -name USE_SPC7110 -entity MAIN_SNES '0
+  set_parameter -name USE_BSX -entity MAIN_SNES '0
+  set_parameter -name USE_MSU -entity MAIN_SNES '1
+} elseif { [lindex $argv 0] == "msu_gsu" } {
+  # MSU-1 beta core: Super FX games, see docs/MSU-1.md
+  puts "MSU GSU"
+  set_parameter -name PAL_PLL -entity core_top '0
+  set_parameter -name MSU_PROBE -entity core_top '0
+  set_parameter -name MSU -entity core_top '1
+
+  set_parameter -name USE_CX4 -entity MAIN_SNES '0
+  set_parameter -name USE_SDD1 -entity MAIN_SNES '0
+  set_parameter -name USE_GSU -entity MAIN_SNES '1
+  set_parameter -name USE_SA1 -entity MAIN_SNES '0
+  set_parameter -name USE_DSPn -entity MAIN_SNES '0
+  set_parameter -name USE_SPC7110 -entity MAIN_SNES '0
+  set_parameter -name USE_BSX -entity MAIN_SNES '0
+  set_parameter -name USE_MSU -entity MAIN_SNES '1
 } else {
   puts "Unknown bitstream type [lindex $argv 0]"
   project_close

@@ -145,7 +145,27 @@ module MAIN_SNES (
 
     // Audio
     output wire [15:0] audio_l,
-    output wire [15:0] audio_r
+    output wire [15:0] audio_r,
+
+    // MSU-1, served by target/pocket/msu the way hps_ext.v and the ARM do it
+    // on MiSTer. All clk_sys.
+    input  wire        msu_enable,
+    output wire [15:0] msu_track_num,
+    output wire        msu_track_request,
+    input  wire        msu_track_mounting,
+    input  wire        msu_track_missing,
+    input  wire [31:0] msu_audio_size,
+    input  wire        msu_audio_ack,
+    output wire        msu_audio_req,
+    output wire        msu_audio_seek,
+    output wire [21:0] msu_audio_sector,
+    input  wire        msu_audio_download,
+    input  wire [15:0] msu_audio_data,
+    input  wire        msu_audio_data_wr,
+    output wire [28:0] msu_ram_addr,   // data file, in 8-byte units
+    output wire        msu_ram_req,    // toggles for each read
+    input  wire        msu_ram_ack,    // follows msu_ram_req when msu_ram_dout is valid
+    input  wire [63:0] msu_ram_dout
 );
   parameter USE_CX4 = 1'b0;
   parameter USE_SDD1 = 1'b0;
@@ -303,8 +323,27 @@ module MAIN_SNES (
 
   wire turbo_allow;
 
-  reg [15:0] main_audio_l;
-  reg [15:0] main_audio_r;
+  wire [15:0] main_audio_l;
+  wire [15:0] main_audio_r;
+
+  // MSU-1 (see the MSU1 section at the end)
+  wire msu_data_download = 0;
+
+  wire [7:0] msu_volume;
+  wire msu_audio_repeat;
+  wire msu_audio_playing;
+  wire msu_audio_stop;
+  wire msu_audio_resume;
+  wire [21:0] msu_resume_sector;
+  wire [31:0] msu_audio_loop_index;
+  wire [31:0] msu_resume_loop_index;
+
+  wire [31:0] msu_data_addr;
+  wire [7:0] msu_data;
+  wire msu_data_ack;
+  wire msu_data_seek;
+  wire msu_data_req;
+
 
   wire vblank_n;
   wire hblank_n;
@@ -429,23 +468,28 @@ module MAIN_SNES (
 `endif
 
       // MSU register handling
-      // .MSU_TRACK_NUM(msu_track_num),
-      // .MSU_TRACK_REQUEST(msu_track_request),
-      // .MSU_TRACK_MOUNTING(msu_track_mounting),
-      // .MSU_TRACK_MISSING(msu_track_missing),
-      // .MSU_VOLUME(msu_volume),
-      // .MSU_AUDIO_REPEAT(msu_audio_repeat),
-      // .MSU_AUDIO_STOP(msu_audio_stop),
-      // .MSU_AUDIO_PLAYING(msu_audio_playing),
-      // .MSU_DATA_ADDR(msu_data_addr),
-      // .MSU_DATA(msu_data),
-      // .MSU_DATA_ACK(msu_data_ack),
-      // .MSU_DATA_SEEK(msu_data_seek),
-      // .MSU_DATA_REQ(msu_data_req),
-      .MSU_ENABLE(0),  // TODO
+      .MSU_TRACK_NUM(msu_track_num),
+      .MSU_TRACK_REQUEST(msu_track_request),
+      .MSU_TRACK_MOUNTING(msu_track_mounting),
+      .MSU_TRACK_MISSING(msu_track_missing),
+      .MSU_VOLUME(msu_volume),
+      .MSU_AUDIO_REPEAT(msu_audio_repeat),
+      .MSU_AUDIO_RESUME(msu_audio_resume),
+      .MSU_AUDIO_STOP(msu_audio_stop),
+      .MSU_AUDIO_PLAYING(msu_audio_playing),
+      .MSU_AUDIO_SECTOR(msu_audio_sector),
+      .MSU_RESUME_SECTOR(msu_resume_sector),
+      .MSU_AUDIO_LOOP_INDEX(msu_audio_loop_index),
+      .MSU_RESUME_LOOP_INDEX(msu_resume_loop_index),
+      .MSU_DATA_ADDR(msu_data_addr),
+      .MSU_DATA(msu_data),
+      .MSU_DATA_ACK(msu_data_ack),
+      .MSU_DATA_SEEK(msu_data_seek),
+      .MSU_DATA_REQ(msu_data_req),
+      .MSU_ENABLE(msu_enable & USE_MSU),
 
-      .AUDIO_L(audio_l),
-      .AUDIO_R(audio_r),
+      .AUDIO_L(main_audio_l),
+      .AUDIO_R(main_audio_r),
 
       // New upstream ports since fork — tied to safe defaults
       .RAM_SIZE(4'b0),
@@ -453,7 +497,6 @@ module MAIN_SNES (
       .SUFAMI_SWAP(1'b0),
       .CC_DIP(8'b0),
       .DSP_FREQ(1'b0),
-      .MSU_AUDIO_SECTOR(22'b0),
       .SS_SAVE(1'b0),
       .SS_TOSD(1'b0),
       .SS_LOAD(1'b0),
@@ -467,8 +510,6 @@ module MAIN_SNES (
       .REFRESH(),
       .V224_MODE(),
       .SNI_JOY(),
-      .MSU_AUDIO_RESUME(),
-      .MSU_RESUME_SECTOR(),
       .SS_AVAIL(),
       .SS_DDR_DO(),
       .SS_DDR_ADDR(),
@@ -1022,114 +1063,95 @@ module MAIN_SNES (
   // end
 
   ///////////////////////////  MSU1  ///////////////////////////////////
+  // As in MiSTer's SNES.sv. The file access MiSTer's ARM does is in
+  // target/pocket/msu, connected through the msu_* ports.
 
-  // wire msu_enable;
-  // wire msu_audio_download = ioctl_download & ioctl_index[5:0] == 6'h02;
-  // wire msu_data_download  = ioctl_download & ioctl_index[5:0] == 6'h03;
-  wire msu_data_download = 0;
+  generate
+    if (USE_MSU) begin : gen_msu
+      wire [15:0] msu_l;
+      wire [15:0] msu_r;
 
-  // // EXT bus is used to communicate with the HPS for MSU functionality
-  // wire [35:0] EXT_BUS;
-  // hps_ext hps_ext
-  // (
-  // 	.reset(reset),
-  // 	.clk_sys(clk_sys),
-  // 	.EXT_BUS(EXT_BUS),
+      msu_audio msu_audio (
+          .reset(reset),
 
-  // 	.msu_enable(msu_enable),
+          .clk(clk_sys),
+          .clk_rate(PAL ? 21281370 : 21477270),
 
-  // 	.msu_track_mounting(msu_track_mounting),
-  // 	.msu_track_missing(msu_track_missing),
-  // 	.msu_track_num(msu_track_num),
-  // 	.msu_track_request(msu_track_request),
+          .ctl_volume(msu_volume),
+          .ctl_stop(msu_audio_stop),
+          .ctl_play(msu_audio_playing),
+          .ctl_resume(msu_audio_resume),
+          .ctl_repeat(msu_audio_repeat),
 
-  // 	.msu_audio_size(msu_audio_size),
-  // 	.msu_audio_ack(msu_audio_ack),
-  // 	.msu_audio_req(msu_audio_req),
-  // 	.msu_audio_seek(msu_audio_seek),
-  // 	.msu_audio_sector(msu_audio_sector),
-  // 	.msu_audio_download(msu_audio_download),
+          .track_size(msu_audio_size),
+          .track_processing(msu_track_request),
 
-  // 	.msu_data_base(msu_data_base)
-  // );
+          .audio_download(msu_audio_download),
+          .audio_data(msu_audio_data),
+          .audio_data_wr(msu_audio_data_wr),
 
-  // wire        msu_track_mounting;
-  // wire        msu_track_missing;
-  // wire [15:0] msu_track_num;
-  // wire        msu_track_request;
-  // wire [31:0] msu_audio_size;
+          .audio_ack(msu_audio_ack),
+          .audio_sector(msu_audio_sector),
+          .audio_req(msu_audio_req),
+          .audio_seek(msu_audio_seek),
+          .resume_sector(msu_resume_sector),
+          .audio_loop_index(msu_audio_loop_index),
+          .resume_loop_index(msu_resume_loop_index),
 
-  // wire  [7:0] msu_volume;
-  // wire        msu_audio_repeat;
-  // wire        msu_audio_playing;
-  // wire        msu_audio_stop;
+          .audio_l(msu_l),
+          .audio_r(msu_r)
+      );
 
-  // wire        msu_audio_ack;
-  // wire        msu_audio_req;
-  // wire        msu_audio_seek;
-  // wire [21:0] msu_audio_sector;
+      reg [15:0] mixed_l, mixed_r;
 
-  // wire [15:0] msu_l;
-  // wire [15:0] msu_r;
+      always @(posedge clk_sys) begin
+        reg [16:0] mix_l, mix_r;
 
-  // msu_audio msu_audio
-  // (
-  // 	.reset(reset),
+        mix_l = $signed({main_audio_l[15], main_audio_l}) + $signed({msu_l[15], msu_l});
+        mix_r = $signed({main_audio_r[15], main_audio_r}) + $signed({msu_r[15], msu_r});
 
-  // 	.clk(clk_sys),
-  // 	.clk_rate(PAL ? 21281370 : 21477270),
+        mixed_l <= (^mix_l[16:15]) ? {mix_l[16], {15{mix_l[15]}}} : mix_l[15:0];
+        mixed_r <= (^mix_r[16:15]) ? {mix_r[16], {15{mix_r[15]}}} : mix_r[15:0];
+      end
 
-  // 	.ctl_volume(msu_volume),
-  // 	.ctl_stop(msu_audio_stop),
-  // 	.ctl_play(msu_audio_playing),
-  // 	.ctl_repeat(msu_audio_repeat),
+      assign audio_l = mixed_l;
+      assign audio_r = mixed_r;
 
-  // 	.track_size(msu_audio_size),
-  // 	.track_processing(msu_track_missing | msu_track_mounting | msu_track_request),
+      wire [31:3] ram_addr;
 
-  // 	.audio_download(msu_audio_download),
-  // 	.audio_data(ioctl_dout),
-  // 	.audio_data_wr(ioctl_wr),
+      msu_data_store msu_data_store (
+          .clk_sys(clk_sys),
 
-  // 	.audio_ack(msu_audio_ack),
-  // 	.audio_sector(msu_audio_sector),
-  // 	.audio_req(msu_audio_req),
-  // 	.audio_seek(msu_audio_seek),
+          .base_addr(32'd0),
 
-  // 	.audio_l(msu_l),
-  // 	.audio_r(msu_r)
-  // );
+          .rd_next(msu_data_req),
+          .rd_seek(msu_data_seek),
+          .rd_seek_done(msu_data_ack),
+          .rd_addr(msu_data_addr),
 
-  // reg [15:0] audio_l, audio_r;
+          .ram_addr(ram_addr),
+          .ram_req (msu_ram_req),
+          .ram_ack (msu_ram_ack),
+          .ram_din (msu_ram_dout),
 
-  // always @(posedge clk_sys) begin
-  // 	reg [16:0] mix_l, mix_r;
+          .rd_dout(msu_data)
+      );
 
-  // 	mix_l = $signed({main_audio_l[15], main_audio_l}) + $signed({msu_l[15], msu_l});
-  // 	mix_r = $signed({main_audio_r[15], main_audio_r}) + $signed({msu_r[15], msu_r});
+      assign msu_ram_addr = ram_addr;
+    end else begin : gen_no_msu
+      assign audio_l = main_audio_l;
+      assign audio_r = main_audio_r;
 
-  // 	audio_l <= (^mix_l[16:15]) ? {mix_l[16], {15{mix_l[15]}}} : mix_l[15:0];
-  // 	audio_r <= (^mix_r[16:15]) ? {mix_r[16], {15{mix_r[15]}}} : mix_r[15:0];
-  // end
-
-  // wire [31:0] msu_data_addr;
-  // wire  [7:0] msu_data;
-  // wire        msu_data_ack;
-  // wire        msu_data_seek;
-  // wire        msu_data_req;
-  // wire [31:0] msu_data_base;
-
-  // assign DDRAM_CLK = clk_mem;
-
-  // msu_data_store msu_data_store
-  // (
-  // 	.*,
-  // 	.rd_next(msu_data_req),
-  // 	.rd_seek(msu_data_seek),
-  // 	.rd_seek_done(msu_data_ack),
-  // 	.rd_addr(msu_data_addr),
-  // 	.rd_dout(msu_data),
-  // 	.base_addr(msu_data_base)
-  // );
+      assign msu_audio_req = 0;
+      assign msu_audio_seek = 0;
+      assign msu_audio_sector = 0;
+      assign msu_audio_stop = 0;
+      assign msu_audio_loop_index = 0;
+      assign msu_data = 0;
+      assign msu_data_ack = 0;
+      assign msu_ram_addr = 0;
+      assign msu_ram_req = 0;
+    end
+  endgenerate
 
 endmodule

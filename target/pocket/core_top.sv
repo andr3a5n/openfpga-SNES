@@ -293,12 +293,7 @@ module core_top (
   //   assign dram_cas_n              = 'h1;
   //   assign dram_we_n               = 'h1;
 
-  assign sram_a                  = 'h0;
-  assign sram_dq                 = {16{1'bZ}};
-  assign sram_oe_n               = 1;
-  assign sram_we_n               = 1;
-  assign sram_ub_n               = 1;
-  assign sram_lb_n               = 1;
+  // sram_*: the MSU-1 build uses the SRAM, see gen_msu below
 
   assign dbg_tx                  = 1'bZ;
   assign user1                   = 1'bZ;
@@ -310,10 +305,18 @@ module core_top (
   // target/pocket/msu/msu_probe.sv). Holds the SNES in reset until done.
   parameter MSU_PROBE = 1'b0;
 
-  wire probe_dt_own;
-  wire [7:0] probe_dt_addr;
-  wire probe_dt_wren;
-  wire [31:0] probe_dt_wdata;
+  // MSU-1 (target/pocket/msu/msu_pocket.sv, docs/MSU-1.md). Needs USE_MSU in
+  // MAIN_SNES. Holds the SNES in reset until the MSU-1 host has looked for
+  // <name>.msu, so a game's MSU-1 check at power-on sees the result.
+  parameter MSU = 1'b0;
+
+  // The probe or the MSU-1 host, whichever uses the target commands and the
+  // datatable
+  wire agent_dt_own;
+  wire [7:0] agent_dt_addr;
+  wire agent_dt_wren;
+  wire [31:0] agent_dt_wdata;
+  wire agent_released;
   wire [31:0] probe_log_rd_data;
 
   // for bridge write data, we just broadcast it to all bus devices
@@ -651,10 +654,10 @@ module core_top (
       datatable_addr <= 0;
       datatable_data <= 0;
       datatable_wren <= 0;
-    end else if (MSU_PROBE && probe_dt_own) begin
-      datatable_addr <= {2'b0, probe_dt_addr};
-      datatable_data <= probe_dt_wdata;
-      datatable_wren <= probe_dt_wren;
+    end else if ((MSU_PROBE || MSU) && agent_dt_own) begin
+      datatable_addr <= {2'b0, agent_dt_addr};
+      datatable_data <= agent_dt_wdata;
+      datatable_wren <= agent_dt_wren;
     end else if (MSU_PROBE && probe_size_toggle) begin
       // Size of the probe log slot, data slot index 2
       datatable_wren <= 1;
@@ -671,13 +674,33 @@ module core_top (
   end
 
   ///////////////////////////////////////////////
-  // MSU-1 probe (debug builds only)
+  // MSU-1 probe (debug builds only) or MSU-1
 
   wire probe_scr_we;
   wire [9:0] probe_scr_addr;
   wire [7:0] probe_scr_data;
-  wire probe_released;
   wire probe_overlay_en;
+
+  // MSU-1 to MAIN_SNES, clk_sys
+  wire msu_enable;
+  wire [15:0] msu_track_num;
+  wire msu_track_request;
+  wire msu_track_mounting;
+  wire msu_track_missing;
+  wire [31:0] msu_audio_size;
+  wire msu_audio_ack;
+  wire msu_audio_req;
+  wire msu_audio_seek;
+  wire [21:0] msu_audio_sector;
+  wire msu_audio_download;
+  wire [15:0] msu_audio_data;
+  wire msu_audio_data_wr;
+  wire [28:0] msu_ram_addr;
+  wire msu_ram_req;
+  wire msu_ram_ack;
+  wire [63:0] msu_ram_dout;
+
+  wire snes_reset;
 
   generate
     if (MSU_PROBE) begin : gen_probe
@@ -697,10 +720,10 @@ module core_top (
           .target_dataslot_done(target_dataslot_done),
           .target_dataslot_err(target_dataslot_err),
 
-          .dt_own(probe_dt_own),
-          .dt_addr(probe_dt_addr),
-          .dt_wren(probe_dt_wren),
-          .dt_wdata(probe_dt_wdata),
+          .dt_own(agent_dt_own),
+          .dt_addr(agent_dt_addr),
+          .dt_wren(agent_dt_wren),
+          .dt_wdata(agent_dt_wdata),
           .dt_q(datatable_q),
 
           .bridge_addr(bridge_addr),
@@ -714,10 +737,72 @@ module core_top (
           .scr_data(probe_scr_data),
 
           .button_start(cont1_key[15]),
-          .released(probe_released),
+          .released(agent_released),
           .overlay_en(probe_overlay_en)
       );
-    end else begin : gen_no_probe
+    end else if (MSU) begin : gen_msu
+      msu_pocket msu (
+          .clk_74a(clk_74a),
+          .clk_sys(clk_sys_21_48),
+
+          .reset_n(reset_n),
+          .snes_reset(snes_reset),
+
+          .target_dataslot_read(target_dataslot_read),
+          .target_dataslot_getfile(target_dataslot_getfile),
+          .target_dataslot_openfile(target_dataslot_openfile),
+          .target_dataslot_id(target_dataslot_id),
+          .target_dataslot_slotoffset(target_dataslot_slotoffset),
+          .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
+          .target_dataslot_length(target_dataslot_length),
+          .target_dataslot_done(target_dataslot_done),
+          .target_dataslot_err(target_dataslot_err),
+
+          .dt_own  (agent_dt_own),
+          .dt_addr (agent_dt_addr),
+          .dt_wren (agent_dt_wren),
+          .dt_wdata(agent_dt_wdata),
+          .dt_q    (datatable_q),
+
+          .bridge_wr(bridge_wr),
+          .bridge_addr(bridge_addr),
+          .bridge_wr_data(bridge_wr_data),
+          .bridge_endian_little(bridge_endian_little),
+
+          .sram_a(sram_a),
+          .sram_dq(sram_dq),
+          .sram_oe_n(sram_oe_n),
+          .sram_we_n(sram_we_n),
+          .sram_ub_n(sram_ub_n),
+          .sram_lb_n(sram_lb_n),
+
+          .booted(agent_released),
+
+          .msu_enable(msu_enable),
+          .msu_track_num(msu_track_num),
+          .msu_track_request(msu_track_request),
+          .msu_track_mounting(msu_track_mounting),
+          .msu_track_missing(msu_track_missing),
+          .msu_audio_size(msu_audio_size),
+          .msu_audio_ack(msu_audio_ack),
+          .msu_audio_req(msu_audio_req),
+          .msu_audio_seek(msu_audio_seek),
+          .msu_audio_sector(msu_audio_sector),
+          .msu_audio_download(msu_audio_download),
+          .msu_audio_data(msu_audio_data),
+          .msu_audio_data_wr(msu_audio_data_wr),
+          .msu_ram_addr(msu_ram_addr),
+          .msu_ram_req(msu_ram_req),
+          .msu_ram_ack(msu_ram_ack),
+          .msu_ram_dout(msu_ram_dout)
+      );
+
+      assign probe_log_rd_data = 0;
+      assign probe_scr_we = 0;
+      assign probe_scr_addr = 0;
+      assign probe_scr_data = 0;
+      assign probe_overlay_en = 0;
+    end else begin : gen_no_agent
       assign target_dataslot_read = 0;
       assign target_dataslot_getfile = 0;
       assign target_dataslot_openfile = 0;
@@ -725,27 +810,51 @@ module core_top (
       assign target_dataslot_slotoffset = 0;
       assign target_dataslot_bridgeaddr = 0;
       assign target_dataslot_length = 0;
-      assign probe_dt_own = 0;
-      assign probe_dt_addr = 0;
-      assign probe_dt_wren = 0;
-      assign probe_dt_wdata = 0;
+      assign agent_dt_own = 0;
+      assign agent_dt_addr = 0;
+      assign agent_dt_wren = 0;
+      assign agent_dt_wdata = 0;
+      assign agent_released = 1;
       assign probe_log_rd_data = 0;
       assign probe_scr_we = 0;
       assign probe_scr_addr = 0;
       assign probe_scr_data = 0;
-      assign probe_released = 1;
       assign probe_overlay_en = 0;
+    end
+
+    if (!MSU || MSU_PROBE) begin : gen_no_msu
+      assign sram_a = 'h0;
+      assign sram_dq = {16{1'bZ}};
+      assign sram_oe_n = 1;
+      assign sram_we_n = 1;
+      assign sram_ub_n = 1;
+      assign sram_lb_n = 1;
+
+      assign msu_enable = 0;
+      assign msu_track_mounting = 0;
+      assign msu_track_missing = 0;
+      assign msu_audio_size = 0;
+      assign msu_audio_ack = 0;
+      assign msu_audio_download = 0;
+      assign msu_audio_data = 0;
+      assign msu_audio_data_wr = 0;
+      assign msu_ram_ack = 0;
+      assign msu_ram_dout = 0;
     end
   endgenerate
 
-  // The probe holds the SNES in reset until it is done and START is pressed
-  wire probe_released_s;
+  // The probe holds the SNES in reset until it is done and START is pressed,
+  // the MSU-1 host until it has looked for the .msu file
+  wire agent_released_s;
 
-  synch_3 probe_released_sync (
-      probe_released,
-      probe_released_s,
+  synch_3 agent_released_sync (
+      agent_released,
+      agent_released_s,
       clk_sys_21_48
   );
+
+  assign snes_reset = ~pll_core_locked || reset_button_s ||
+      ((MSU_PROBE || MSU) && ~agent_released_s);
 
   wire [15:0] audio_l;
   wire [15:0] audio_r;
@@ -899,7 +1008,7 @@ module core_top (
       .clk_mem_85_9 (clk_mem_85_9),
       .clk_sys_21_48(clk_sys_21_48),
 
-      .core_reset(~pll_core_locked || reset_button_s || (MSU_PROBE && ~probe_released_s)),
+      .core_reset(snes_reset),
 
       .rtc(rtc),
 
@@ -1041,7 +1150,26 @@ module core_top (
 
       // Audio
       .audio_l(audio_l),
-      .audio_r(audio_r)
+      .audio_r(audio_r),
+
+      // MSU-1
+      .msu_enable(msu_enable),
+      .msu_track_num(msu_track_num),
+      .msu_track_request(msu_track_request),
+      .msu_track_mounting(msu_track_mounting),
+      .msu_track_missing(msu_track_missing),
+      .msu_audio_size(msu_audio_size),
+      .msu_audio_ack(msu_audio_ack),
+      .msu_audio_req(msu_audio_req),
+      .msu_audio_seek(msu_audio_seek),
+      .msu_audio_sector(msu_audio_sector),
+      .msu_audio_download(msu_audio_download),
+      .msu_audio_data(msu_audio_data),
+      .msu_audio_data_wr(msu_audio_data_wr),
+      .msu_ram_addr(msu_ram_addr),
+      .msu_ram_req(msu_ram_req),
+      .msu_ram_ack(msu_ram_ack),
+      .msu_ram_dout(msu_ram_dout)
   );
 
   // Video
