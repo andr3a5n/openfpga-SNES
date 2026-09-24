@@ -16,8 +16,8 @@ The fork's GitHub Actions do the build.
    ("I understand my workflows, go ahead and enable them"). GitHub disables
    them on forks until you do.
 2. **Actions** → **MSU-1 Probe** → **Run workflow**, pick the branch, run.
-   It simulates the probe first, then compiles for about 35 minutes. Pushing a
-   change to the probe's files starts it too.
+   It simulates the probe first, then compiles, which takes 20 to 40 minutes.
+   Pushing a change to the probe's files starts it too.
 3. When it is green, download the artifact **SD card - SNES MSU-1 probe** from
    the run's page.
 

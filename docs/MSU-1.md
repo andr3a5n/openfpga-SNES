@@ -316,7 +316,11 @@ picks between three bitstreams, and the same mechanism can pick between more:
 | PAL (as today) | all four | PAL ROMs; a PAL plain + MSU-1 variant if needed |
 
 Each of these has far more headroom than today's `main`, and no game loses its
-chip. The cost is CI time (one compile of about 35 minutes each, in parallel)
+chip. Measured on the probe build, which has no coprocessors: the SNES itself
+(`MAIN_SNES`) takes about 8,900 ALMs and the whole bitstream 12,731 (69%), of
+which the probe is about 2,800. A plain bitstream therefore leaves roughly
+8,000 ALMs for MSU-1, and the phase 0 pieces phase 1 reuses (`msu_tgt_cmd`,
+`msu_path`) are about 315 of them. The cost is CI time (one compile of about 35 minutes each, in parallel)
 and a larger download. Only if a combination still does not fit does a
 rarely used chip or an optional feature go.
 
