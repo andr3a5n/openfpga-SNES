@@ -279,16 +279,20 @@ def cmd_decode(args):
         "  (matches)" if msu_resp == msu_param else "  (DIFFERS from what was opened)"))
     print("  read slot: %d (%s)" % (r[22] & 0xFFFF, "usable" if r[22] >> 31 else "no slot opened"))
 
-    print("\n== P3: APF's datatable {slot id, size} table")
-    names = list(L_SNAP.items())
-    for name, base in names:
-        pairs = []
-        for i in range(0, 64, 2):
-            sid, size = w[base + i], w[base + i + 1]
-            if sid == 0 and size == 0 and i > 0:
-                continue
-            pairs.append("%d:%d" % (sid, size))
-        print("  %-20s %s" % (name, " ".join(pairs)))
+    print("\n== P3: APF's datatable, {slot id, size} per data.json entry")
+    print("  (the core itself writes the sizes of the Save and Probe Log slots)")
+    slot_names = ["0 Cartridge", "10 Save", "30 Probe Log", "20 MSU-1 Audio",
+                  "21 MSU-1 Data", "22 Audio Test"]
+    print("  %-20s %s" % ("", " ".join("%-19s" % n for n in slot_names)))
+    for name, base in L_SNAP.items():
+        cells = []
+        for i in range(len(slot_names)):
+            sid, size = w[base + 2 * i], w[base + 2 * i + 1]
+            cells.append("%-19s" % ("id %d, %d" % (sid, size)))
+        print("  %-20s %s" % (name, " ".join(cells)))
+        extra = [(i, w[base + i]) for i in range(2 * len(slot_names), 64) if w[base + i]]
+        if extra:
+            print("  %-20s other nonzero words: %s" % ("", extra))
     print("  size of slot 20 / 21 / 22 at boot: %d / %d / %d" % (r[56], r[57], r[58]))
     print("  size of slot 20 / 21 / 22 at end:  %d / %d / %d" % (r[47], r[48], r[49]))
 

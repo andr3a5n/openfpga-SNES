@@ -1,7 +1,8 @@
 # MSU-1 on the Analogue Pocket: feasibility and implementation plan
 
-Status: phase 0 (the probe build) is implemented and simulated, and waits for a
-run on real hardware. See [MSU-1-probe.md](MSU-1-probe.md) for how to run it.
+Status: phase 0 (the probe build) has run on a Pocket with firmware 2.7 and
+answered every open question; see [Phase 0 results](#phase-0-results-firmware-27).
+Phase 1 (MSU-1 audio) is next.
 
 ## Verdict
 
@@ -10,9 +11,10 @@ core-side MSU-1 logic is already in this repository and needs no changes. What
 is missing is the part that MiSTer does in software on its ARM processor:
 finding the files, opening them and feeding the audio to the core. On the
 Pocket the FPGA has to do that itself, using the APF target commands `0x0190`,
-`0x0192` and `0x0180`. The HarpMudd MP3 player has shown on real hardware that
-these commands work and that sequential SD reads reach about 736 KB/s. MSU-1
-audio needs 176.4 KB/s.
+`0x0192` and `0x0180`. The phase 0 probe confirmed on real hardware that these
+commands behave as documented, that the firmware reports each opened file's
+exact size, and that reads reach 831 KB/s in 4 KB pieces and 1.7 MB/s in 64 KB
+pieces. MSU-1 audio needs 176.4 KB/s.
 
 The data port (the `.msu` file) is feasible for files that fit in spare SDRAM
 (up to 16 MB). Video hacks that stream hundreds of megabytes through the data
@@ -97,146 +99,119 @@ The official APF documentation for the commands this plan uses:
 
 ## Budget
 
+Measured by the phase 0 probe on a Pocket with firmware 2.7 (see
+[Phase 0 results](#phase-0-results-firmware-27)):
+
 | Quantity | Value |
 |---|---|
 | MSU-1 PCM (44.1 kHz, 16-bit stereo) | 176.4 KB/s |
-| Measured sequential APF read, 4 KB chunks | 736 KB/s → 24% duty cycle |
-| Random read (seek, loop jump) | ~24 ms |
-| MSU-1 data port, CPU DMA from `$2001` | up to 2.68 MB/s. Higher than APF can deliver, so the data file must come from RAM |
+| Sequential read, 4 KB / 16 KB / 64 KB per command | 831 / 1,379 / 1,712 KB/s |
+| Cost of one read | ~1.6 ms fixed + ~2 MB/s transfer |
+| Read at a new offset in the same file (seek) | 4-7 ms for 4 KB |
+| Read after switching to another open file | 17-27 ms for 4 KB |
+| Opening a file by path | 8-28 ms; a missing file answers in 12 ms |
+| MSU-1 data port, CPU DMA from `$2001` | up to 2.68 MB/s, more than APF delivers, so the data file must come from RAM |
 | `msu_audio` internal FIFO | 4 KB = 23 ms |
-| Proposed main ring in SRAM | 128 KB = 743 ms |
-| Proposed loop-point cache in SRAM | 64 KB = 371 ms |
 
 Free memory the SNES core does not use on the Pocket:
 
 - **SRAM, 256 KB, async, dedicated pins.** Tied idle in `core_top.sv`. It is the
   natural audio buffer, because it shares nothing with the SNES memory system.
 - **SDRAM port 1 (banks 2-3, 16 MB).** On MiSTer this port holds WRAM. The
-  Pocket port moved WRAM to PSRAM, so port 1 is tied off. This is where the
-  `.msu` data file can go.
+  Pocket port moved WRAM to PSRAM, so port 1 is tied off. This is where large
+  `.msu` data files can go (phase 2).
 - **PSRAM second dies.** Unused, but they share the bus with WRAM and ARAM. Not
   proposed.
 
 ## Architecture
 
 ```
-                clk_74a                                         clk_sys (21.477 / 21.281 MHz)
- APF ─bridge─► core_bridge_cmd ◄─► msu_apf_ctrl ◄──CDC──► msu_host_shim ◄─► main (upstream)
-                    │ datatable        │  0190/0192/0180            │           └─ MSU.sv  ($2000-$2007)
-                    │ (path structs)   │                            │
-                    │                  ▼                            ├─► msu_audio.v (upstream) ─► mixer ─► sound_i2s
- bridge_wr 0x3xxxxxxx ──► msu_sram (arbiter + async SRAM, 256 KB)   │
-                                       └── sector reader ──CDC FIFO─┘
-                                                                  (phase 2: msu_data_store.sv ◄─► SDRAM port 1)
+               clk_74a                                         clk_sys (21.477 / 21.281 MHz)
+APF ─bridge─► core_bridge_cmd ◄─► msu_host ◄──── toggles ────► msu_shim ◄─► MAIN_SNES
+                   │ datatable       │ 0190/0192/0180                │        ├─ main ─ MSU.sv ($2000-$2007)
+                   │ (paths, sizes)  │ queue + preload               │        ├─ msu_audio.v ─► mixer ─► audio
+bridge_wr 0x3xxxxxxx ──────────────► msu_sram (256 KB SRAM) ─ sector words ─ CDC FIFO ─┘        └─ msu_data_store.sv
+                                            └──────────────── 64-bit data reads (CDC) ─────────────┘
 ```
 
 New Pocket-only modules go in `target/pocket/msu/`. Nothing under
-`rtl/upstream/` changes.
+`rtl/upstream/` changes. `MAIN_SNES` gets the parts MiSTer's `SNES.sv` has:
+`msu_audio`, `msu_data_store` and the mixer.
 
-1. **`msu_apf_ctrl.sv` (clk_74a).** Replaces the ARM. It owns the
-   `target_dataslot_*` interface of `core_bridge_cmd` (tied off today). It
-   issues one command at a time and uses HarpMudd's rule of waiting for `done`
-   to go low before waiting for it to go high. It runs detection at boot,
-   opens tracks, keeps the ring full, and finds end of file. It is a hardware
-   FSM, not a soft CPU: a soft CPU would cost roughly 1,000 ALMs and several
-   M10K blocks on a device the SNES already fills.
-2. **`msu_path.sv`.** Builds file paths in the datatable BRAM. It copies the
-   `0x0190` response for slot 0 (at word 64) to the `0x0192` parameter struct
-   (at word 128). The copy stops at the last `.` after the last `/`, then
-   appends `-<n>.pcm` (decimal track number, no leading zeros) or `.msu` and a
-   NUL, and clears the flags and size words. It arbitrates the core-side
-   datatable port with the existing save-size writer in `core_top.sv`. Paths
-   that would exceed 255 bytes count as "not found".
-3. **`msu_sram.sv`.** Controller for the async SRAM with two clients: bridge
-   writes (`0x0180` data landing at `0x3000_0000-0x3003_FFFF`) and the sector
-   reader. It also counts the words each `0x0180` delivers. That count is how
-   end of file is found.
-4. **`msu_host_shim.sv` (clk_sys).** Presents exactly the `hps_ext.v` signal
-   contract to `main` and `msu_audio`: `msu_enable`, `track_mounting`,
-   `track_missing`, `audio_size`, `audio_ack`, and the `audio_download` window
-   carrying 512 16-bit words per sector. Requests cross to clk_74a as toggles;
-   sector data crosses through a small dual-clock FIFO.
-5. **Mixer in `rtl/mister_top/SNES.sv`.** A saturating add of the SNES and MSU
-   audio, copied from MiSTer's `SNES.sv`.
+1. **`msu_tgt_cmd.sv`** (phase 0): one target command at a time, with the
+   `done` fix and a timeout.
+2. **`msu_path.sv`** (phase 0): `<name>.msu` / `<name>-<n>.pcm` from the ROM's
+   path, in the `0x0192` parameter struct.
+3. **`msu_host.sv` (clk_74a).** Replaces the ARM: detection and data file
+   preload at boot, opening tracks, the audio sector queue, serving sectors. A
+   hardware state machine, not a soft CPU, to save space.
+4. **`msu_sram.sv`.** Async SRAM controller for three clients: bridge writes
+   (the data of `0x0180` reads, landing at `0x3xxxxxxx`), the sector reader and
+   the data port.
+5. **`msu_shim.sv` (clk_sys).** Presents exactly the `hps_ext.v` contract to
+   `main` and `msu_audio`: `msu_enable`, `track_mounting`, `track_missing`,
+   `audio_size`, `audio_ack`, and the `audio_download` window carrying 512
+   16-bit words per sector. Requests cross to clk_74a as toggles, sector data
+   through a dual-clock FIFO.
 
 ### SRAM layout
 
 | SRAM range | Use |
 |---|---|
-| `0x00000-0x1FFFF` (128 KB) | Main ring. Holds file bytes `[lo, hi)`; position = file offset mod 128 KB |
-| `0x20000-0x2FFFF` (64 KB) | Loop-point cache: file bytes from the loop sector onward |
-| `0x30000-0x3FFFF` (64 KB) | Spare (phase 1). Candidate data-file cache for very small `.msu` files |
+| `0x00000-0x0FFFF` (64 KB) | Audio sector queue: 64 slots of 1 KB, each tagged with its sector number in the file |
+| `0x10000-0x3FFFF` (192 KB) | The start of the `.msu` data file, preloaded at boot |
 
 ### Sequences
 
-**Boot / ROM load.** The loader drops `ioctl_download` before APF has finished,
-so the SNES would start running before detection completes. A game that checks
-for `S-MSU1` in its reset handler would then fall back to SPC music for the
-whole session. So the SNES is held in reset (a new term in `reset` in
-`SNES.sv`, like MiSTer's `msu_data_download`) until detection finishes:
+**Boot.** The loader lets the SNES run before APF has finished, so a game that
+checks for `S-MSU1` in its reset handler would miss MSU-1 for the whole
+session. The SNES is held in reset until detection finishes (the probe
+already does this):
 
-1. Wait for `reset_n` from `core_bridge_cmd` (APF has left reset).
-2. `0x0190` on slot 0 → path of the ROM.
-3. Build `<base>.msu`, `0x0192` into slot 21.
-4. Result 0 → `msu_enable = 1`; result 3 → MSU-1 off. That is the MSU-1 rule
-   (the data file must exist, it may be empty).
-5. Release reset. If nothing answers within about 1 s, give up with MSU-1 off,
-   so a firmware without these commands still boots games normally.
+1. Wait for `reset_n` from `core_bridge_cmd`.
+2. `0x0190` on slot 0 → the ROM's path. The first command after the release
+   took 205 ms on hardware; the timeout is 2 s, after which the game boots
+   without MSU-1.
+3. Build `<name>.msu`, `0x0192` it into its slot. Result 0 → MSU-1 on, and the
+   datatable now holds its exact size. Result 3 → MSU-1 off (the MSU-1 rule:
+   the data file must exist, it may be empty).
+4. Preload up to 192 KB of it into SRAM with 64 KB reads (about 0.1 s).
+5. Release the SNES.
 
 **Track mount** (the game writes `$2004/$2005`, so `track_request` rises):
 
 1. The shim raises `track_mounting`, which keeps the audio-busy bit set. Games
-   poll that bit, so this latency is expected (FXPAK has it too).
-2. Build `<base>-<n>.pcm`, `0x0192` into slot 20.
-   - Result 3 → `track_missing = 1`, size 0. The game falls back to SPC for
-     that track.
-3. Read the first chunk into the ring. Parse bytes 4-7 (loop point, in samples)
-   and compute loop sector `(loop + 2) >> 8`, exactly as `msu_audio` does.
-4. Report size (see below) and drop `track_mounting`.
-5. In the background: fill the loop cache from the loop sector, then keep the
-   ring topped up.
+   poll that bit (FXPAK has this latency too).
+2. Build `<name>-<n>.pcm`, `0x0192` into the audio slot (about 10 ms).
+   Result 3 → `track_missing`, and the game falls back to SPC music.
+3. Take the exact size from the datatable, read the first 16 KB, take the loop
+   point from bytes 4-7 and compute its sector `(loop + 2) >> 8`, exactly as
+   `msu_audio` does.
+4. Report the size and drop `track_mounting`. Mounting takes about 20 ms.
 
-**Streaming.** For each `audio_req` or `audio_seek` for sector `s`, the shim
-serves the 1024 bytes from the loop cache if `s` falls in it, else from the
-ring if `s*1024` is in `[lo, hi)`, and only then raises `audio_ack` and streams
-512 words. A miss (resume or an unusual seek) flushes the ring, restarts
-reading at `s*1024`, and serves once data lands (about 25-50 ms of silence, like
-real hardware). Read priority: miss > ring below low watermark > loop cache
-fill > ring top-up.
-
-**Loops.** At end of file `msu_audio` seeks to the loop sector. That sector is
-already in the loop cache, so the loop is gapless. The cache covers 371 ms
-while the ring restarts from `loop + 64 KB` with one random read.
-
-**End of file and size.** The core is not told a file's size after `0x0192`.
-Until end of file is known, the shim reports a provisional size of
-`0xFFFF_FFFF`. `msu_audio` reads `track_size` combinationally, so updating it
-later works without touching upstream code. The controller counts the words each
-read delivers:
-
-- A read that returns fewer words than asked, or fails with code 2, has crossed
-  end of file.
-- On code 2, re-issue the same offset with length `0xFFFFFFFF`. APF clamps it
-  to the end of the file, and the word count gives the exact size.
-
-The ring is always ahead of the player, so the real size is known long before
-`msu_audio` reaches the end. If phase 0 shows that APF refreshes the slot's
-entry in the datatable size table after `0x0192`, the controller can read the
-size there instead and skip this.
+**Streaming.** The queue holds sectors in playback order, not file order. The
+host reads 16 KB at a time (about 10 ms each, 8 times faster than playback)
+from the current position to the end of the file, then continues at the loop
+sector. When `msu_audio` reaches the end and seeks to the loop sector, that
+sector is already at the head of the queue: loops need no read and are
+gapless. A request for any other sector (resume, a game's own seek) flushes
+the queue and reads from there; the first 4 KB arrive in 4-7 ms, inside the
+17-23 ms `msu_audio` still has buffered. The 64 KB queue is 371 ms of audio,
+nine times the slowest read measured. The file's last sector is padded to 1 KB;
+`msu_audio` stops at the exact size anyway.
 
 ### Package changes
 
-- `data.json`: two new slots, `"deferload": true`, `"required": false`, no
-  filename: id 20 `pcm`, id 21 `msu`. Parameters `0x8` (read-only) if APF
-  accepts `0x0192` on a slot that is not user-reloadable; otherwise `0x1`,
-  with the side effect that the slots show in the core menu.
-- `generate.tcl` / `.qsf`: `USE_MSU '1` for the bitstreams that carry it.
-- `core.json`: `version_required` to whichever firmware phase 0 confirms.
-- README: folder layout and limitations.
+- A new beta core, `andr3a5n.SNESMSU`, until MSU-1 is proven, so the normal core
+  stays as it is.
+- `data.json`: Cartridge, Save, then "MSU-1 Audio" (id 20) and "MSU-1 Data"
+  (id 21), both `"deferload": true`, `"required": false`, parameters `0x8`.
+  Their datatable size words are at slot index 2 and 3.
+- `generate.tcl`: one bitstream per chip, see [Fitting the logic](#fitting-the-logic).
+- `support/loader.asm`: pick the bitstream by chip type.
 
-Users would lay out a pack like this and pick the `.sfc` in the Pocket
-browser. The browser only lists `smc`/`sfc`/`bs`, so the other files stay
-hidden:
+Users lay out a pack like this and pick the `.sfc` in the Pocket browser. The
+browser only lists `smc`/`sfc`/`bs`, so the other files stay hidden:
 
 ```
 /Assets/snes/common/MSU-1/Zelda3/zelda3.sfc
@@ -246,22 +221,19 @@ hidden:
 
 ## Data port (`.msu` file)
 
-Phase 1 enables MSU-1 and serves only audio. Reads from `$2001` return zeros.
-Music-only packs, the large majority, never read the data port. Some read
-only a few bytes.
+Phase 1 preloads the first 192 KB of the data file into SRAM and serves `$2001`
+from there through the unchanged `msu_data_store.sv`. Music-only packs, the
+large majority, have an empty or small data file. Reads beyond 192 KB return
+zeros; seeks still complete, so no game waits forever.
 
-Phase 2 serves the data port:
+Phase 2, for larger data files:
 
-- After detection, preload the whole `.msu` into SDRAM port 1 (banks 2-3, up to
-  16 MB) with sequential `0x0180` reads (about 1.4 s per MB). The chunk data
-  crosses from the bridge the way the ROM already does, through a
-  `data_loader`-style FIFO. The preload finishes before the first track opens,
-  so the game never alternates reads between two slots.
-- Reuse `msu_data_store.sv` unchanged with `base_addr = 0`. A small adapter
-  turns each 64-bit request into four 16-bit port-1 reads. A seek beyond the
-  preload watermark holds `data_ack` low (the busy bit stays set) until the
-  data is in.
-- Port-1 requests must follow the same bus-cycle timing MiSTer uses for WRAM
+- Preload into SDRAM port 1 (banks 2-3, up to 16 MB) with 64 KB reads, about
+  0.6 s per MB. The preload runs before the first track opens: interleaving
+  data reads with audio reads would cost 17-27 ms per switch.
+- A seek beyond the preload watermark holds `data_ack` low (the busy bit stays
+  set) until the data is in.
+- Port-1 requests must follow the bus-cycle timing MiSTer uses for WRAM
   (issued on `SYSCLKR_CE`/`SYSCLKF_CE`). The controller restarts its slot
   counter on port-1 requests, so arbitrary timing could disturb ROM reads on
   port 0. This needs simulation with the SA-1 and GSU builds before hardware.
@@ -324,25 +296,31 @@ which the probe is about 2,800. A plain bitstream therefore leaves roughly
 and a larger download. Only if a combination still does not fit does a
 rarely used chip or an optional feature go.
 
-## Unknowns to settle first (phase 0)
+## Phase 0 results (firmware 2.7)
 
-Each of these changes the design, and all of them need hardware:
+The probe ran on a Pocket with firmware 2.7 against the generated test set.
+The log is in [probe-results/fw2.7.msulog](probe-results/fw2.7.msulog);
+`python3 tools/msu_probe.py decode docs/probe-results/fw2.7.msulog` prints the
+full report. Every read matched the test pattern.
 
-| # | Question | Design impact |
-|---|---|---|
-| P1 | Does `0x0190` on slot 0 return the full path when the chip32 loader loaded the ROM? | Base of all file naming |
-| P2 | Does `0x0192` work on a read-only (`0x8`) deferload slot? Latency in a folder of ~100 files? | Slot parameters; mount latency |
-| P3 | After `0x0192`, does the datatable size entry for that slot change? | Size path, or the end-of-file method above |
-| P4 | `0x0180` across end of file: code 2 with or without data? Does length `0xFFFFFFFF` clamp as documented? | End-of-file detection |
-| P5 | Throughput for 4/8/16/32/64 KB reads; latency of reads scattered over the first 15 MB of a file | Chunk size, watermarks |
-| P6 | Cost of alternating reads between slots 20 and 21 | Confirms preload over streaming for `.msu` |
-| P7 | How soon after reset exit target commands are accepted | Boot hold length and timeout |
-| P8 | Minimum firmware version with `0x0190`/`0x0192` | `core.json` requirement |
+| # | Question | Answer | Consequence for phase 1 |
+|---|---|---|---|
+| P1 | Does `0x0190` on slot 0 return the ROM's path? | Yes, the full path at offset 0, e.g. `/Assets/snes/common/msuprobe/msuprobe.sfc`, in 0.5 ms | File names are derived from it as planned |
+| P2 | Does `0x0192` open a file into a non-reloadable (`0x8`) deferload slot? | Yes. 8-28 ms per open, 11 ms for the 100th file of a folder. A missing file returns 3 | Slots use `0x8` and stay out of the menu; mounting a track takes about 20 ms |
+| P3 | Is the size of a core-opened file reported? | Yes: after each `0x0192`, APF writes `{slot id, exact size}` into the datatable at the slot's position in `data.json` | No end-of-file probing: the size is read after the open |
+| P4 | Reads at the end of a file | A read crossing the end returns 2 and no data. Length `0xFFFFFFFF` returns the exact tail (1,236 bytes) | The last read is sized from the known file size |
+| P5 | Read speed | 831 KB/s at 4 KB, 1,115 at 8 KB, 1,379 at 16 KB, 1,572 at 32 KB, 1,712 at 64 KB. Scattered 4 KB reads: 4-7 ms | 16 KB audio reads; a seek costs less than `msu_audio`'s own buffer |
+| P6 | Alternating reads between two open files | 17-27 ms per read instead of 4 ms | Preload the data file; never interleave it with audio |
+| P7 | Boot | APF released the core 752 ms after PLL lock; the first command took 205 ms, later ones are fast | 2 s timeout for detection |
+| P8 | Firmware | Works on 2.7 | Tested version noted in the README |
 
-The probe build answers P1-P7 in one run (P8 is the firmware version the
-tester reports). It shows the results on screen and also writes them to a log
-file through an extra nonvolatile data slot, which the Pocket saves on exit
-like a save file. `tools/msu_probe.py decode` turns the log into a report.
+Two more facts from the run:
+
+- The bridge is big-endian on firmware 2.7 (`bridge_endian_little` = 0): in a
+  32-bit bridge word, the first file byte is bits 31-24. The core handles both
+  orders, like `data_loader.sv`.
+- The extra nonvolatile slot was saved to the SD card on exit, even though
+  the chip32 loader found no file to load into it at boot.
 
 ## Phased plan
 
@@ -365,10 +343,11 @@ like a save file. `tools/msu_probe.py decode` turns the log into a report.
 - `tools/msu_probe.py`: test file generator, log decoder, ROM generator.
 - `.github/workflows/msu_probe.yml`: simulate, compile, package for the SD card.
 
-Deliverable: answers P1-P8 from one hardware session.
+Done: answered P1-P8 in one hardware session.
 
-**Phase 1: audio MVP.** `msu_path`, `msu_apf_ctrl`, `msu_sram`,
-`msu_host_shim`, mixer, `USE_MSU '1`, boot hold. Verification before hardware:
+**Phase 1: audio MVP.** `msu_host`, `msu_sram`, `msu_shim`, `msu_audio` and
+the mixer in `MAIN_SNES`, the data file preload into SRAM, per-chip bitstreams,
+as a beta core `andr3a5n.SNESMSU`. Verification before hardware:
 
 - A simulation testbench with a behavioural APF model that serves
   `0x0190`/`0x0192`/`0x0180` from real files on disk, with configurable latency
