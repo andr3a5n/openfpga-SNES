@@ -1,0 +1,12 @@
+SNES MSU-1 (beta): the SNES core (port by agg23, core by srg320) with MSU-1
+support for the Pocket by andr3a5n.
+
+Put a game's MSU-1 files next to its ROM, named like the ROM:
+  Game.sfc  Game.msu  Game-1.pcm  Game-2.pcm ...
+The .msu file turns MSU-1 on; games without one run as usual.
+
+MSU-1 works with games without a coprocessor, with DSP-n, CX4, SA-1 and Super
+FX. S-DD1, SPC7110, BS-X and PAL games run without MSU-1.
+
+Assets/snes/common/msu1test/msu1test.sfc checks the setup: green means MSU-1
+audio is playing. See docs/MSU-1-beta.md in the repository.

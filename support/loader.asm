@@ -167,10 +167,32 @@ jp send_chip
 
 check_pal:
 cmp r3,#1 // Check if PAL
-jp nz, send_chip
+jp nz, chip_core
 // It's PAL
 ld r8,#2
 core r8
+if {defined MSU} {
+jp send_chip
+}
+
+chip_core:
+if {defined MSU} {
+// MSU-1 core (-d MSU): SA-1 and Super FX games have bitstreams of their own.
+// Core 0 has no chip, the DSP-n chips and CX4.
+cmp r4,#0x60 // Check if SA-1
+jp nz, bit_gsu
+log_string("Using SA-1")
+ld r8,#3
+core r8
+jp send_chip
+
+bit_gsu:
+cmp r4,#0x70 // Check if GSU
+jp nz, send_chip
+log_string("Using GSU")
+ld r8,#4
+core r8
+}
 
 send_chip:
 log_string("Sending chip type")

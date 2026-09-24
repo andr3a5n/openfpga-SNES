@@ -1,27 +1,15 @@
 ################################################################################
 # Builds the MSU-1 probe core (a debug build, see docs/MSU-1.md, phase 0).
 #
-# Run it from the Actions tab ("Run workflow", pick the branch), or push a
-# change to the files listed below. The artifact "SD card" unzips to the root
-# of the Pocket's SD card: the probe core, which installs next to the normal
-# SNES core, and its test files.
+# Run it from the Actions tab ("Run workflow", pick the branch). The artifact
+# "SD card" unzips to the root of the Pocket's SD card: the probe core, which
+# installs next to the normal SNES core, and its test files. Phase 0 is done,
+# so pushes no longer build it.
 ################################################################################
 name: MSU-1 Probe
 
 on:
   workflow_dispatch:
-  push:
-    branches-ignore:
-      - master
-    paths:
-      - "target/pocket/**"
-      - "rtl/mister_top/**"
-      - "generate.tcl"
-      - "support/loader.asm"
-      - "pkg/probe/**"
-      - "tools/msu_probe.py"
-      - "tools/package_probe.py"
-      - ".github/workflows/msu_probe.yml"
 
 jobs:
   probe:

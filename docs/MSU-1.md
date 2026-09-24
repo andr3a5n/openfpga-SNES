@@ -2,7 +2,9 @@
 
 Status: phase 0 (the probe build) has run on a Pocket with firmware 2.7 and
 answered every open question; see [Phase 0 results](#phase-0-results-firmware-27).
-Phase 1 (MSU-1 audio) is next.
+Phase 1 (MSU-1 audio and a 192 KB data port) is implemented as the beta core
+`andr3a5n.SNESMSU` and passes simulation; it waits for its first hardware
+test. How to build, install and test it: [MSU-1-beta.md](MSU-1-beta.md).
 
 ## Verdict
 
@@ -27,9 +29,11 @@ cannot simply be added to it. [Fitting the logic](#fitting-the-logic) describes
 how to keep every enhancement chip anyway, by splitting `main` into one
 bitstream per chip.
 
-## What exists today
+## Starting point
 
 ### This repository
+
+Before phase 1:
 
 | Piece | State |
 |---|---|
@@ -148,11 +152,16 @@ New Pocket-only modules go in `target/pocket/msu/`. Nothing under
 4. **`msu_sram.sv`.** Async SRAM controller for three clients: bridge writes
    (the data of `0x0180` reads, landing at `0x3xxxxxxx`), the sector reader and
    the data port.
-5. **`msu_shim.sv` (clk_sys).** Presents exactly the `hps_ext.v` contract to
-   `main` and `msu_audio`: `msu_enable`, `track_mounting`, `track_missing`,
-   `audio_size`, `audio_ack`, and the `audio_download` window carrying 512
-   16-bit words per sector. Requests cross to clk_74a as toggles, sector data
-   through a dual-clock FIFO.
+5. **`msu_pocket.sv`.** The top of the above, and the shim (clk_sys) that
+   presents exactly the `hps_ext.v` contract to `main` and `msu_audio`:
+   `msu_enable`, `track_mounting`, `track_missing`, `audio_size`, `audio_ack`,
+   and the `audio_download` window carrying 512 16-bit words per sector.
+   Requests cross to clk_74a as toggles, sector data through a dual-clock
+   FIFO, data port reads as a toggle handshake with `msu_data_store`.
+
+`core_top.sv` instantiates `msu_pocket` when its `MSU` parameter is set, and
+`MAIN_SNES` has `msu_audio`, `msu_data_store` and the mixer under `USE_MSU`,
+connected through its `msu_*` ports.
 
 ### SRAM layout
 
@@ -170,11 +179,14 @@ already does this):
 
 1. Wait for `reset_n` from `core_bridge_cmd`.
 2. `0x0190` on slot 0 → the ROM's path. The first command after the release
-   took 205 ms on hardware; the timeout is 2 s, after which the game boots
-   without MSU-1.
+   took 205 ms on hardware; each command times out after 3 s, after which the
+   game boots without MSU-1.
 3. Build `<name>.msu`, `0x0192` it into its slot. Result 0 → MSU-1 on, and the
-   datatable now holds its exact size. Result 3 → MSU-1 off (the MSU-1 rule:
-   the data file must exist, it may be empty).
+   datatable now holds its exact size. Any other result → try
+   `<name>-1.pcm`: if that opens, MSU-1 is on with an empty data file,
+   otherwise off. The MSU-1 rule is that the data file must exist and may be
+   empty; the fallback covers a firmware that refuses 0-byte files, which the
+   probe did not test.
 4. Preload up to 192 KB of it into SRAM with 64 KB reads (about 0.1 s).
 5. Release the SNES.
 
@@ -345,19 +357,33 @@ Two more facts from the run:
 
 Done: answered P1-P8 in one hardware session.
 
-**Phase 1: audio MVP.** `msu_host`, `msu_sram`, `msu_shim`, `msu_audio` and
-the mixer in `MAIN_SNES`, the data file preload into SRAM, per-chip bitstreams,
-as a beta core `andr3a5n.SNESMSU`. Verification before hardware:
+**Phase 1: audio MVP (implemented, waiting for hardware).** `msu_host`,
+`msu_sram`, `msu_pocket`, `msu_audio` and the mixer in `MAIN_SNES`, the data
+file preload into SRAM, per-chip bitstreams, as a beta core
+`andr3a5n.SNESMSU` ([MSU-1-beta.md](MSU-1-beta.md)). Verified before
+hardware:
 
-- A simulation testbench with a behavioural APF model that serves
-  `0x0190`/`0x0192`/`0x0180` from real files on disk, with configurable latency
-  and stalls.
-- Stubs for the Altera `dcfifo` and the VHDL `CEGen`.
-- Scripted MSU-1 register writes. Check the `msu_audio` output bit-exact
-  against the `.pcm` samples, across track changes, loops (loop point 0, in the
-  middle, past 64 KB), resume, missing tracks, and 200 ms injected stalls.
+- `sim/msu/tb_msu_play.sv`: the firmware model (`apf_model.svh`, shared with
+  the probe testbench) serves `0x0190`/`0x0192`/`0x0180` from files on disk,
+  with the bridge paced like the real SPI link. Stubs for the Altera `dcfifo`
+  and the VHDL `CEGen`. `msu_audio` runs at 10 times the real sample rate,
+  which puts 10 times the real load on the stream.
+- Checked bit-exact against the `.pcm` samples: data port reads (including the
+  end of the file), a missing track, a looping track with the loop point in
+  the middle and a queue smaller than the track, a 5 ms firmware stall (50 ms
+  at the real rate), a track change during playback, a track played once and
+  replayed (loop point 0), resume, and MSU-1 detection without a `.msu` file.
+- Not covered: loop points past 64 KB (sector numbers are 22 bits wide
+  throughout, as upstream) and stalls longer than the queue (371 ms).
+- The simulation found a race in the queue bookkeeping (a read issued before
+  the previous one was counted, which overfilled the queue) and two
+  `msu_audio` behaviours that MiSTer shares, now documented in
+  [MSU-1-beta.md](MSU-1-beta.md#what-works-and-what-does-not).
+- `sim/msu/check_testrom.py` runs the hardware test ROM in a 65816
+  interpreter against a model of the MSU-1 registers.
 
-Hardware: several real packs, long play, and loop points by ear.
+Hardware: the test ROM, several real packs, long play, and loop points by
+ear.
 
 **Phase 2: data port.** SDRAM port-1 preload and the `msu_data_store` adapter,
 simulated against the port-0 ROM traffic of the SA-1/GSU builds. Hardware: a

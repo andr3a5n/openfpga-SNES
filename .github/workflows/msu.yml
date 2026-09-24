@@ -1,0 +1,129 @@
+################################################################################
+# MSU-1 beta core (docs/MSU-1-beta.md).
+#
+# Every push that touches the MSU-1 files runs the simulations. Building the
+# core takes a manual run: Actions tab, "MSU-1 Beta", "Run workflow", pick the
+# branch. That compiles five bitstreams in parallel (about 40 minutes) and
+# uploads the artifact "SD card - SNES MSU-1 beta", which unzips to the root
+# of the Pocket's SD card: the core andr3a5n.SNESMSU, which installs next to
+# the normal SNES core, and the MSU-1 test pack.
+################################################################################
+name: MSU-1 Beta
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - "target/pocket/**"
+      - "rtl/mister_top/**"
+      - "rtl/upstream/chip/MSU1/**"
+      - "sim/msu/**"
+      - "support/loader.asm"
+      - "pkg/msu/**"
+      - "tools/msu_testpack.py"
+      - "tools/package_msu.py"
+      - ".github/workflows/msu.yml"
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "🧰 Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "🔬 Simulate MSU-1 playback"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iverilog
+          sim/msu/run_play_sim.sh > play.log 2>&1 || { tail -n 60 play.log; exit 1; }
+          grep -v "warning\|Pruning" play.log | tail -n 30
+
+      - name: "🔬 Check the test ROM"
+        run: python3 sim/msu/check_testrom.py
+
+      - name: "⬆️ Upload simulation log"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation - MSU-1
+          path: |
+            play.log
+            sim/msu/work/tb_msu_*.log
+
+  synthesis:
+    if: github.event_name == 'workflow_dispatch'
+    needs: simulate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # generate.tcl build type and core.json file name
+        include:
+          - build: msu
+            name: snes_msu
+          - build: msu_sa1
+            name: snes_msu_sa1
+          - build: msu_gsu
+            name: snes_msu_gsu
+          - build: ntsc_spc
+            name: snes_spc
+          - build: pal
+            name: snes_pal
+      fail-fast: false
+    steps:
+      - name: "🧰 Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "🏗️ Compile design"
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/build ghcr.io/raetro/quartus:21.1 \
+            quartus_sh -t generate.tcl ${{ matrix.build }}
+
+      - name: "📊 Fit and timing summary"
+        if: always()
+        run: |
+          echo "## ${{ matrix.build }}" >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/fit_summary.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "⬆️ Upload bitstream"
+        run: |
+          mkdir bitstream
+          cp projects/output_files/snes_pocket.rbf bitstream/${{ matrix.name }}.rbf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: bitstream/${{ matrix.name }}.rbf
+
+      - name: "⬆️ Upload reports"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports - ${{ matrix.build }}
+          path: |
+            projects/output_files/*.summary
+            projects/output_files/*.rpt
+
+  package:
+    needs: synthesis
+    runs-on: ubuntu-latest
+    steps:
+      - name: "🧰 Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "⬇️ Download bitstreams"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: snes_*
+          path: bitstreams
+          merge-multiple: true
+
+      - name: "📦 Package"
+        run: python3 tools/package_msu.py bitstreams sdcard
+
+      - name: "⬆️ Upload SD card files"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SD card - SNES MSU-1 beta
+          path: sdcard/
