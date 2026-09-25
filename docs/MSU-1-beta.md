@@ -129,11 +129,9 @@ For each problem:
 1. Start the game fresh, play to the problem, and **quit the core from the
    Pocket menu soon after it happens** (the log keeps only the recent past).
 2. Send the `.msulog` file and a sentence on what you saw and when.
-3. Helpful, if you can: a recording of the Pocket's output through the dock
-   and a capture card, as lossless audio (WAV or FLAC, 48 kHz), and the same
-   passage from an emulator with good MSU-1 support (ares, bsnes, Mesen or
-   Snes9x) at the same volume. A short video clip shows visual glitches frame
-   by frame.
+3. Helpful, if you can: a recording of the Pocket and a reference run in
+   an emulator, as described below. A short video clip shows visual
+   glitches frame by frame.
 4. The MSU-1 patch file of the game (`.bps` or `.ips`), or where you got it.
    The patch contains the hack's own code, which shows how it drives the
    MSU-1 registers. Please do not send ROMs.
@@ -142,6 +140,65 @@ For each problem:
 
 A recording of track 3 of the test ROM (press R) through the dock is the most
 useful single recording for sound quality.
+
+### Recording the Pocket
+
+The dock's HDMI output carries the core's 48 kHz audio digitally, so a
+capture card records exactly what the core produces. The headphone jack
+adds the Pocket's DAC and amplifier: fine for listening, less exact for
+measuring.
+
+- Record uncompressed or lossless audio: WAV, or FLAC. Not AAC or MP3, which
+  is what OBS uses by default. In OBS: Settings > Audio > Sample Rate 48 kHz,
+  and in the recording settings an audio encoder such as FFmpeg PCM 16-bit
+  or FLAC. Audacity recording straight from the capture card works too.
+- Keep 48 kHz end to end: set the capture device to 48000 Hz in the
+  operating system's sound settings, so nothing resamples on the way.
+- No noise suppression, gain or other filters on the capture source.
+- Same volume setting for every recording; start a few seconds before and
+  stop a few seconds after the passage.
+
+### Reference run in Mesen
+
+Mesen 2 (continued as [MesenCE](https://github.com/nesdev-org/MesenCE),
+2.2.1 or newer) emulates the SNES accurately, plays MSU-1 packs, records WAV
+files and runs Lua scripts.
+
+- Audio options: sample rate 48000 Hz, volume 100 (lower only if it
+  clips), equalizer, reverb, crossfeed and panning off. The recorder uses
+  exactly these settings.
+- Tools > Sound Recorder > Record before the passage, Stop after it. The WAV
+  comes straight from the emulator, so no capture card is needed.
+- `tools/mesen_msu_trace.lua` logs every MSU-1 command the game sends, with
+  frame numbers and times, in the same terms as the Pocket's event log: Debug
+  > Script Window, open the script, run it, then play. With "Allow access to
+  I/O and OS functions" enabled in the script window settings it writes
+  `msu_trace.txt` to Mesen's script data folder; otherwise copy the lines
+  from the script window's log. The script was written against Mesen 2's
+  documented Lua API and tested against a mock of it, not in Mesen itself:
+  if it reports an error, send the message.
+
+With the trace, the Pocket's event log and the two recordings of the same
+passage, a difference can be found without describing it: the trace shows
+what the game asked for, the log what the core did, the recordings what came
+out.
+
+### Pocket developer options
+
+In Settings > Developer:
+
+- **Debug Logging** writes a log of the core's boot to `/System/Logs/` on the
+  SD card, including what the chip32 loader prints ("Using SA-1", "Using
+  GSU"): it shows which bitstream a game got. Worth sending once for an SA-1
+  or Super FX game.
+- **Statistics** shows the core's video refresh rate and sync status in the
+  top right. If a visual glitch also shows there, the video signal itself
+  was disturbed rather than the game drawing a wrong frame.
+- **USB SD Access**, where available, mounts the SD card over USB (Analogue
+  + X), handy for copying logs.
+- Chip32 Exec Log, Asset Load Detail, Pause Core Boot and Pause Load Data
+  are for debugging the loader or attaching a JTAG debugger; not needed
+  here.
 
 ## What works and what does not
 
